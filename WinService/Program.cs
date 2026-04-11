@@ -678,6 +678,12 @@ class Program
                         return;
                     }
 
+                    if (string.Equals(parts[1], "all", StringComparison.OrdinalIgnoreCase))
+                    {
+                        TrySendTelegramText(chatId, BuildAllBlocksReply());
+                        return;
+                    }
+
                     TrySendTelegramText(chatId, BuildIpStatusReply(parts[1]));
                     return;
                 }
@@ -708,6 +714,86 @@ class Program
         private string UiText(string ua, string en)
         {
             return IsUiLanguageUa() ? ua : en;
+        }
+
+        private string BuildAllBlocksReply()
+        {
+            if (!File.Exists(blockListLogPath))
+                return UiText("Активних блокувань немає.", "No active blocks.");
+
+            DateTime nowLocal = DateTime.Now;
+            var directBlocks = new List<(string ip, DateTime until, int minutes)>();
+            var subnetBlocks = new List<(string subnet, DateTime until)>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            lock (logLock)
+            {
+                foreach (string line in File.ReadAllLines(blockListLogPath))
+                {
+                    string target = ExtractBlockedTargetFromLine(line);
+                    if (string.IsNullOrWhiteSpace(target))
+                        continue;
+                    if (IsBlockEntryExpired(line, nowLocal, out DateTime until))
+                        continue;
+                    if (!seen.Add(target + until.ToString("s")))
+                        continue;
+
+                    if (target.Contains("/", StringComparison.Ordinal))
+                        subnetBlocks.Add((target, until));
+                    else
+                        directBlocks.Add((target, until, ExtractBlockMinutesFromBlockLogLine(line)));
+                }
+            }
+
+            // deduplicate direct blocks — keep latest until per IP
+            var bestDirect = directBlocks
+                .GroupBy(b => b.ip, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(b => b.until).First())
+                .OrderByDescending(b => b.until)
+                .ToList();
+
+            var bestSubnet = subnetBlocks
+                .GroupBy(b => b.subnet, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(b => b.until).First())
+                .OrderByDescending(b => b.until)
+                .ToList();
+
+            if (bestDirect.Count == 0 && bestSubnet.Count == 0)
+                return UiText("Активних блокувань немає.", "No active blocks.");
+
+            var lines = new List<string>();
+            lines.Add(UiText($"🔒 Активні блокування ({bestDirect.Count + bestSubnet.Count}):",
+                              $"🔒 Active blocks ({bestDirect.Count + bestSubnet.Count}):"));
+
+            if (bestDirect.Count > 0)
+            {
+                lines.Add("");
+                lines.Add(UiText("IP-адреси:", "IP addresses:"));
+                foreach (var b in bestDirect)
+                {
+                    TimeSpan left = b.until - nowLocal;
+                    string rem = left.TotalHours >= 1
+                        ? $"{(int)left.TotalHours}г {left.Minutes:D2}хв"
+                        : $"{(int)left.TotalMinutes}хв";
+                    lines.Add($"  {b.ip}  ⏱ {b.until:HH:mm:ss}  ({rem})");
+                }
+            }
+
+            if (bestSubnet.Count > 0)
+            {
+                lines.Add("");
+                lines.Add(UiText("Підмережі:", "Subnets:"));
+                foreach (var b in bestSubnet)
+                {
+                    TimeSpan left = b.until - nowLocal;
+                    string rem = left.TotalHours >= 1
+                        ? $"{(int)left.TotalHours}г {left.Minutes:D2}хв"
+                        : $"{(int)left.TotalMinutes}хв";
+                    lines.Add($"  {b.subnet}  ⏱ {b.until:HH:mm:ss}  ({rem})");
+                }
+            }
+
+            return string.Join("\n", lines);
         }
 
         private string BuildIpStatusReply(string ipAddress)
