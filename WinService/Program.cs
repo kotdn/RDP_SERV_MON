@@ -18,6 +18,7 @@ using System.Security.Principal;
 using System.Net.NetworkInformation;
 using System.Diagnostics.Eventing.Reader;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 #pragma warning disable CA1416 // Suppress Windows-only API warnings
 
@@ -122,6 +123,75 @@ class Program
 
     public class RDPSecurityService : ServiceBase
     {
+        private enum WTS_CONNECTSTATE_CLASS
+        {
+            WTSActive,
+            WTSConnected,
+            WTSConnectQuery,
+            WTSShadow,
+            WTSDisconnected,
+            WTSIdle,
+            WTSListen,
+            WTSReset,
+            WTSDown,
+            WTSInit
+        }
+
+        private enum WTS_INFO_CLASS
+        {
+            WTSInitialProgram,
+            WTSApplicationName,
+            WTSWorkingDirectory,
+            WTSOEMId,
+            WTSSessionId,
+            WTSUserName,
+            WTSWinStationName,
+            WTSDomainName,
+            WTSConnectState,
+            WTSClientBuildNumber,
+            WTSClientName,
+            WTSClientDirectory,
+            WTSClientProductId,
+            WTSClientHardwareId,
+            WTSClientAddress
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WTS_SESSION_INFO
+        {
+            public int SessionID;
+            [MarshalAs(UnmanagedType.LPStr)]
+            public string pWinStationName;
+            public WTS_CONNECTSTATE_CLASS State;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WTS_CLIENT_ADDRESS
+        {
+            public int AddressFamily;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
+            public byte[] Address;
+        }
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        private static extern bool WTSEnumerateSessions(
+            IntPtr hServer,
+            int Reserved,
+            int Version,
+            out IntPtr ppSessionInfo,
+            out int pCount);
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        private static extern void WTSFreeMemory(IntPtr pointer);
+
+        [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern bool WTSQuerySessionInformation(
+            IntPtr hServer,
+            int sessionId,
+            WTS_INFO_CLASS wtsInfoClass,
+            out IntPtr ppBuffer,
+            out int pBytesReturned);
+
         // Defaults; overridden by C:\ProgramData\RDPSecurityService\config.json
         private const int DEFAULT_FAILED_ATTEMPTS_THRESHOLD = 5;
         private const int DEFAULT_BLOCK_MINUTES = 20;
@@ -155,6 +225,7 @@ class Program
         private Thread telegramCommandThread = null!;
         private long telegramUpdateOffset = 0;
         private bool telegramCommandBootstrapDone = false;
+        private DateTime serviceStartUtc = DateTime.UtcNow;
         // private volatile GateConfig gateConfig = new GateConfig { Enabled = false, ListenPort = 3389, TargetHost = "127.0.0.1", TargetPort = 3389 };
 
         // private TcpListener gateListener;
@@ -171,11 +242,27 @@ class Program
             public Dictionary<string, DateTime> SourceIps = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         }
 
+        private enum PendingTelegramCommandType
+        {
+            None,
+            BanIp,
+            BanDuration,
+            UnbanIp
+        }
+
+        private sealed class PendingTelegramCommand
+        {
+            public PendingTelegramCommandType Type;
+            public string IpAddress = string.Empty;
+        }
+
         private readonly Dictionary<string, BanState> bans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, BanState> subnetBans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, SprayState> sprayByUser = new Dictionary<string, SprayState>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<DateTime>> tcpProbeHits = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, DateTime> recentTcpProbeKeys = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, PendingTelegramCommand> pendingTelegramCommands = new Dictionary<string, PendingTelegramCommand>(StringComparer.Ordinal);
+        private readonly object pendingTelegramCommandsLock = new object();
         private static readonly TimeSpan TcpProbeWindow = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan TcpProbeDedupWindow = TimeSpan.FromSeconds(10);
         private const int TCP_PROBE_THRESHOLD = 3;
@@ -192,6 +279,7 @@ class Program
         protected override void OnStart(string[] args)
         {
             isRunning = true;
+            serviceStartUtc = DateTime.UtcNow;
             logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RDPSecurityService");
             if (!Directory.Exists(logDirectory))
                 Directory.CreateDirectory(logDirectory);
@@ -474,7 +562,7 @@ class Program
             }
         }
 
-        private bool TrySendTelegramText(string chatId, string message)
+        private bool TrySendTelegramText(string chatId, string message, string? replyMarkupJson = null)
         {
             try
             {
@@ -483,16 +571,24 @@ class Program
                     return false;
 
                 string normalizedMessage = NormalizeTelegramText(message);
+                string effectiveReplyMarkupJson = string.IsNullOrWhiteSpace(replyMarkupJson)
+                    ? BuildCommandKeyboardJson()
+                    : replyMarkupJson;
 
                 using (var client = new System.Net.Http.HttpClient())
                 {
                     client.Timeout = TimeSpan.FromSeconds(15);
                     var url = $"https://api.telegram.org/bot{cfg.BotToken}/sendMessage";
-                    var content = new System.Net.Http.FormUrlEncodedContent(new[]
+                    var formFields = new List<KeyValuePair<string, string>>
                     {
                         new KeyValuePair<string, string>("chat_id", chatId),
                         new KeyValuePair<string, string>("text", normalizedMessage)
-                    });
+                    };
+
+                    if (!string.IsNullOrWhiteSpace(effectiveReplyMarkupJson))
+                        formFields.Add(new KeyValuePair<string, string>("reply_markup", effectiveReplyMarkupJson));
+
+                    var content = new System.Net.Http.FormUrlEncodedContent(formFields);
 
                     var task = client.PostAsync(url, content);
                     task.Wait(TimeSpan.FromSeconds(15));
@@ -518,6 +614,37 @@ class Program
                 WriteLog($"Telegram send error: {ex.Message}");
                 return false;
             }
+        }
+
+        private string BuildCommandKeyboardJson()
+        {
+            var keyboard = new
+            {
+                keyboard = new[]
+                {
+                    new[] { "/status", "/status all" },
+                    new[] { "/users", "/help" },
+                    new[] { "/ban", "/unban" }
+                },
+                resize_keyboard = true,
+                one_time_keyboard = false,
+                selective = true,
+                input_field_placeholder = UiText("Оберіть команду або введіть її вручну", "Choose a command or type it manually")
+            };
+
+            return JsonSerializer.Serialize(keyboard);
+        }
+
+        private string BuildForceReplyJson(string placeholder)
+        {
+            var reply = new
+            {
+                force_reply = true,
+                selective = true,
+                input_field_placeholder = placeholder
+            };
+
+            return JsonSerializer.Serialize(reply);
         }
 
         private static string NormalizeTelegramText(string message)
@@ -600,24 +727,58 @@ class Program
                     long maxUpdateId = telegramUpdateOffset - 1;
                     if (!telegramCommandBootstrapDone)
                     {
+                        DateTime recentThresholdUtc = serviceStartUtc.AddSeconds(-10);
+                        long skippedBacklogUpdateId = telegramUpdateOffset - 1;
+
                         foreach (JsonElement update in resultElement.EnumerateArray())
                         {
-                            if (update.TryGetProperty("update_id", out JsonElement updateIdElement) && updateIdElement.TryGetInt64(out long bootstrapUpdateId))
-                                maxUpdateId = Math.Max(maxUpdateId, bootstrapUpdateId);
+                            if (!update.TryGetProperty("update_id", out JsonElement updateIdElement) || !updateIdElement.TryGetInt64(out long bootstrapUpdateId))
+                                continue;
+
+                            maxUpdateId = Math.Max(maxUpdateId, bootstrapUpdateId);
+
+                            if (!update.TryGetProperty("message", out JsonElement bootstrapMessageElement))
+                            {
+                                skippedBacklogUpdateId = Math.Max(skippedBacklogUpdateId, bootstrapUpdateId);
+                                continue;
+                            }
+
+                            string bootstrapChatId = string.Empty;
+                            if (bootstrapMessageElement.TryGetProperty("chat", out JsonElement bootstrapChatElement)
+                                && bootstrapChatElement.TryGetProperty("id", out JsonElement bootstrapChatIdElement))
+                            {
+                                bootstrapChatId = bootstrapChatIdElement.ToString();
+                            }
+
+                            long messageUnix = 0;
+                            if (bootstrapMessageElement.TryGetProperty("date", out JsonElement bootstrapDateElement))
+                                bootstrapDateElement.TryGetInt64(out messageUnix);
+
+                            DateTime messageUtc = messageUnix > 0
+                                ? DateTimeOffset.FromUnixTimeSeconds(messageUnix).UtcDateTime
+                                : DateTime.MinValue;
+
+                            bool keepForProcessing = string.Equals(bootstrapChatId, cfg.ChatId, StringComparison.Ordinal)
+                                && messageUtc >= recentThresholdUtc;
+
+                            if (!keepForProcessing)
+                                skippedBacklogUpdateId = Math.Max(skippedBacklogUpdateId, bootstrapUpdateId);
                         }
 
                         telegramCommandBootstrapDone = true;
-                        if (maxUpdateId >= telegramUpdateOffset)
+                        if (skippedBacklogUpdateId >= telegramUpdateOffset)
                         {
-                            telegramUpdateOffset = maxUpdateId + 1;
-                            WriteLog($"Telegram command watcher skipped backlog up to update_id={maxUpdateId}");
+                            telegramUpdateOffset = skippedBacklogUpdateId + 1;
+                            WriteLog($"Telegram command watcher skipped backlog up to update_id={skippedBacklogUpdateId}");
                         }
-                        return;
                     }
 
                     foreach (JsonElement update in resultElement.EnumerateArray())
                     {
                         if (!update.TryGetProperty("update_id", out JsonElement updateIdElement) || !updateIdElement.TryGetInt64(out long updateId))
+                            continue;
+
+                        if (updateId < telegramUpdateOffset)
                             continue;
 
                         maxUpdateId = Math.Max(maxUpdateId, updateId);
@@ -643,7 +804,10 @@ class Program
                             : string.Empty;
 
                         if (!string.IsNullOrWhiteSpace(text))
+                        {
+                            WriteLog($"Telegram command received: {text}");
                             HandleTelegramCommand(incomingChatId, text);
+                        }
                     }
 
                     if (maxUpdateId >= telegramUpdateOffset)
@@ -660,6 +824,9 @@ class Program
                 if (string.IsNullOrWhiteSpace(trimmed))
                     return;
 
+                if (!trimmed.StartsWith("/", StringComparison.Ordinal) && TryHandlePendingTelegramInput(chatId, trimmed))
+                    return;
+
                 string[] parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length == 0)
                     return;
@@ -670,9 +837,16 @@ class Program
                     command = command.Substring(0, atIndex);
 
                 command = command.ToLowerInvariant();
+                if (command == "/cancel")
+                {
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, UiText("Поточну дію скасовано.", "Current action cancelled."));
+                    return;
+                }
+
                 if (command == "/?" || command == "/help")
                 {
-                    TrySendTelegramText(chatId, BuildHelpReply());
+                    TrySendTelegramText(chatId, BuildHelpReply(), BuildCommandKeyboardJson());
                     return;
                 }
 
@@ -694,16 +868,37 @@ class Program
                     return;
                 }
 
+                if (command == "/users")
+                {
+                    TrySendTelegramText(chatId, BuildUsersReply());
+                    return;
+                }
+
                 if (command == "/ban")
                 {
-                    if (parts.Length < 3)
+                    if (parts.Length < 2)
                     {
-                        TrySendTelegramText(chatId, UiText(
-                            "Використання: /ban <ip> <тривалість>\nПриклади: /ban 1.2.3.4 1d | 6h | 30m | 1440",
-                            "Usage: /ban <ip> <duration>\nExamples: /ban 1.2.3.4 1d | 6h | 30m | 1440"));
+                        SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.BanIp });
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("Введіть IP для блокування.\nПотім я попрошу тривалість.\nСкасування: /cancel",
+                                   "Enter the IP to block.\nThen I will ask for the duration.\nCancel: /cancel"),
+                            BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
                         return;
                     }
 
+                    if (parts.Length < 3)
+                    {
+                        SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.BanDuration, IpAddress = parts[1] });
+                        TrySendTelegramText(
+                            chatId,
+                            UiText($"IP прийнято: {parts[1]}\nТепер введіть тривалість: 1d, 6h, 30m або 1440\nСкасування: /cancel",
+                                   $"IP accepted: {parts[1]}\nNow enter duration: 1d, 6h, 30m or 1440\nCancel: /cancel"),
+                            BuildForceReplyJson(UiText("Наприклад: 1d", "Example: 1d")));
+                        return;
+                    }
+
+                    ClearPendingTelegramCommand(chatId);
                     TrySendTelegramText(chatId, ManualBanIpFromTelegram(parts[1], parts[2]));
                     return;
                 }
@@ -712,10 +907,16 @@ class Program
                 {
                     if (parts.Length < 2)
                     {
-                        TrySendTelegramText(chatId, UiText("Використання: /unban <ip>", "Usage: /unban <ip>"));
+                        SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.UnbanIp });
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("Введіть IP для розблокування.\nСкасування: /cancel",
+                                   "Enter the IP to unban.\nCancel: /cancel"),
+                            BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
                         return;
                     }
 
+                    ClearPendingTelegramCommand(chatId);
                     TrySendTelegramText(chatId, UnblockIpFromTelegram(parts[1]));
                     return;
                 }
@@ -748,14 +949,247 @@ class Program
                        "/status all — list all active blocks"),
                 UiText("/status <ip> — детальний стан конкретного IP",
                        "/status <ip> — detailed info for a specific IP"),
+                UiText("/users — список активних користувацьких сесій",
+                       "/users — list active user sessions"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
                        "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
                   UiText("/unban <ip> — зняти пряме блокування з IP",
                       "/unban <ip> — remove direct block from IP"),
+                UiText("/cancel — скасувати поточне введення",
+                       "/cancel — cancel the current prompt"),
                 UiText("/? або /help — ця довідка",
                        "/? or /help — this help message"),
             };
             return string.Join("\n", lines);
+        }
+
+        private void SetPendingTelegramCommand(string chatId, PendingTelegramCommand pendingCommand)
+        {
+            lock (pendingTelegramCommandsLock)
+            {
+                pendingTelegramCommands[chatId] = pendingCommand;
+            }
+        }
+
+        private void ClearPendingTelegramCommand(string chatId)
+        {
+            lock (pendingTelegramCommandsLock)
+            {
+                pendingTelegramCommands.Remove(chatId);
+            }
+        }
+
+        private bool TryGetPendingTelegramCommand(string chatId, out PendingTelegramCommand pendingCommand)
+        {
+            lock (pendingTelegramCommandsLock)
+            {
+                return pendingTelegramCommands.TryGetValue(chatId, out pendingCommand!);
+            }
+        }
+
+        private bool TryHandlePendingTelegramInput(string chatId, string text)
+        {
+            if (!TryGetPendingTelegramCommand(chatId, out PendingTelegramCommand pendingCommand))
+                return false;
+
+            switch (pendingCommand.Type)
+            {
+                case PendingTelegramCommandType.BanIp:
+                    if (!IPAddress.TryParse(text, out IPAddress parsedIp))
+                    {
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("Некоректний IP. Введіть IP ще раз або /cancel.",
+                                   "Invalid IP. Enter the IP again or /cancel."),
+                            BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
+                        return true;
+                    }
+
+                    SetPendingTelegramCommand(chatId, new PendingTelegramCommand
+                    {
+                        Type = PendingTelegramCommandType.BanDuration,
+                        IpAddress = parsedIp.ToString()
+                    });
+                    TrySendTelegramText(
+                        chatId,
+                        UiText($"IP прийнято: {parsedIp}\nВведіть тривалість: 1d, 6h, 30m або 1440\nСкасування: /cancel",
+                               $"IP accepted: {parsedIp}\nEnter duration: 1d, 6h, 30m or 1440\nCancel: /cancel"),
+                        BuildForceReplyJson(UiText("Наприклад: 1d", "Example: 1d")));
+                    return true;
+
+                case PendingTelegramCommandType.BanDuration:
+                    if (!TryParseDuration(text, out int _) || text.Trim().StartsWith("/", StringComparison.Ordinal))
+                    {
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("Некоректна тривалість. Введіть 1d, 6h, 30m або 1440.\nСкасування: /cancel",
+                                   "Invalid duration. Enter 1d, 6h, 30m or 1440.\nCancel: /cancel"),
+                            BuildForceReplyJson(UiText("Наприклад: 1d", "Example: 1d")));
+                        return true;
+                    }
+
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, ManualBanIpFromTelegram(pendingCommand.IpAddress, text.Trim()));
+                    return true;
+
+                case PendingTelegramCommandType.UnbanIp:
+                    if (!IPAddress.TryParse(text, out IPAddress unbanIp))
+                    {
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("Некоректний IP. Введіть IP ще раз або /cancel.",
+                                   "Invalid IP. Enter the IP again or /cancel."),
+                            BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
+                        return true;
+                    }
+
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, UnblockIpFromTelegram(unbanIp.ToString()));
+                    return true;
+            }
+
+            return false;
+        }
+
+        private string BuildUsersReply()
+        {
+            try
+            {
+                var sessions = GetActiveUserSessions();
+                if (sessions.Count == 0)
+                    return UiText("Активних користувачів не знайдено.", "No active users found.");
+
+                var lines = new List<string>
+                {
+                    UiText($"👥 Активні користувачі ({sessions.Count}):", $"👥 Active users ({sessions.Count}):")
+                };
+
+                foreach (var session in sessions)
+                {
+                    string userLabel = string.IsNullOrWhiteSpace(session.Domain)
+                        ? session.UserName
+                        : $"{session.Domain}\\{session.UserName}";
+                    string sourceLabel = string.IsNullOrWhiteSpace(session.ClientIp)
+                        ? UiText("локально", "local")
+                        : session.ClientIp;
+
+                    lines.Add($"{userLabel} | ID {session.SessionId} | {session.StateText} | IP: {sourceLabel}");
+                }
+
+                return string.Join("\n", lines);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"BuildUsersReply error: {ex.Message}");
+                return UiText("Не вдалося отримати список активних користувачів.", "Failed to get active users list.");
+            }
+        }
+
+        private sealed class ActiveUserSession
+        {
+            public int SessionId;
+            public string UserName = string.Empty;
+            public string Domain = string.Empty;
+            public string ClientIp = string.Empty;
+            public string StateText = string.Empty;
+        }
+
+        private List<ActiveUserSession> GetActiveUserSessions()
+        {
+            var result = new List<ActiveUserSession>();
+            IntPtr sessionInfoPtr = IntPtr.Zero;
+            int sessionCount = 0;
+
+            if (!WTSEnumerateSessions(IntPtr.Zero, 0, 1, out sessionInfoPtr, out sessionCount) || sessionInfoPtr == IntPtr.Zero)
+                return result;
+
+            try
+            {
+                int dataSize = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
+
+                for (int index = 0; index < sessionCount; index++)
+                {
+                    IntPtr current = IntPtr.Add(sessionInfoPtr, index * dataSize);
+                    var sessionInfo = Marshal.PtrToStructure<WTS_SESSION_INFO>(current);
+                    if (sessionInfo.State != WTS_CONNECTSTATE_CLASS.WTSActive && sessionInfo.State != WTS_CONNECTSTATE_CLASS.WTSConnected)
+                        continue;
+
+                    string userName = QuerySessionString(sessionInfo.SessionID, WTS_INFO_CLASS.WTSUserName);
+                    if (string.IsNullOrWhiteSpace(userName))
+                        continue;
+
+                    result.Add(new ActiveUserSession
+                    {
+                        SessionId = sessionInfo.SessionID,
+                        UserName = userName,
+                        Domain = QuerySessionString(sessionInfo.SessionID, WTS_INFO_CLASS.WTSDomainName),
+                        ClientIp = QuerySessionClientIp(sessionInfo.SessionID),
+                        StateText = sessionInfo.State == WTS_CONNECTSTATE_CLASS.WTSActive
+                            ? UiText("АКТИВНА", "ACTIVE")
+                            : UiText("ПІДКЛЮЧЕНА", "CONNECTED")
+                    });
+                }
+            }
+            finally
+            {
+                if (sessionInfoPtr != IntPtr.Zero)
+                    WTSFreeMemory(sessionInfoPtr);
+            }
+
+            return result
+                .OrderBy(s => s.UserName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(s => s.SessionId)
+                .ToList();
+        }
+
+        private string QuerySessionString(int sessionId, WTS_INFO_CLASS infoClass)
+        {
+            IntPtr buffer = IntPtr.Zero;
+            int bytesReturned = 0;
+
+            try
+            {
+                if (!WTSQuerySessionInformation(IntPtr.Zero, sessionId, infoClass, out buffer, out bytesReturned)
+                    || buffer == IntPtr.Zero
+                    || bytesReturned <= 1)
+                {
+                    return string.Empty;
+                }
+
+                return Marshal.PtrToStringAuto(buffer)?.Trim() ?? string.Empty;
+            }
+            finally
+            {
+                if (buffer != IntPtr.Zero)
+                    WTSFreeMemory(buffer);
+            }
+        }
+
+        private string QuerySessionClientIp(int sessionId)
+        {
+            IntPtr buffer = IntPtr.Zero;
+            int bytesReturned = 0;
+
+            try
+            {
+                if (!WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientAddress, out buffer, out bytesReturned)
+                    || buffer == IntPtr.Zero
+                    || bytesReturned < Marshal.SizeOf(typeof(WTS_CLIENT_ADDRESS)))
+                {
+                    return string.Empty;
+                }
+
+                var address = Marshal.PtrToStructure<WTS_CLIENT_ADDRESS>(buffer);
+                if (address.Address == null || address.AddressFamily != 2 || address.Address.Length < 6)
+                    return string.Empty;
+
+                return string.Join('.', address.Address[2], address.Address[3], address.Address[4], address.Address[5]);
+            }
+            finally
+            {
+                if (buffer != IntPtr.Zero)
+                    WTSFreeMemory(buffer);
+            }
         }
 
         private string ManualBanIpFromTelegram(string ipAddress, string durationStr)
