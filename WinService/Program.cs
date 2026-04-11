@@ -708,11 +708,11 @@ class Program
                     return;
                 }
 
-                if (command == "/unblock")
+                if (command == "/unban")
                 {
                     if (parts.Length < 2)
                     {
-                        TrySendTelegramText(chatId, UiText("Використання: /unblock <ip>", "Usage: /unblock <ip>"));
+                        TrySendTelegramText(chatId, UiText("Використання: /unban <ip>", "Usage: /unban <ip>"));
                         return;
                     }
 
@@ -750,8 +750,8 @@ class Program
                        "/status <ip> — detailed info for a specific IP"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
                        "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
-                UiText("/unblock <ip> — зняти пряме блокування з IP",
-                       "/unblock <ip> — remove direct block from IP"),
+                  UiText("/unban <ip> — зняти пряме блокування з IP",
+                      "/unban <ip> — remove direct block from IP"),
                 UiText("/? або /help — ця довідка",
                        "/? or /help — this help message"),
             };
