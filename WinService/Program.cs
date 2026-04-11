@@ -66,6 +66,12 @@ class Program
 
                 using (var process = System.Diagnostics.Process.Start(processInfo))
                 {
+                    if (process == null)
+                    {
+                        Console.WriteLine("Failed to start sc.exe for service installation");
+                        return;
+                    }
+
                     process.WaitForExit();
                     if (process.ExitCode == 0)
                         Console.WriteLine("Service installed successfully");
@@ -94,6 +100,12 @@ class Program
 
                 using (var process = System.Diagnostics.Process.Start(processInfo))
                 {
+                    if (process == null)
+                    {
+                        Console.WriteLine("Failed to start sc.exe for service removal");
+                        return;
+                    }
+
                     process.WaitForExit();
                     if (process.ExitCode == 0)
                         Console.WriteLine("Service uninstalled successfully");
@@ -139,6 +151,9 @@ class Program
         private volatile List<BlockLevel> blockLevels = new List<BlockLevel> { new BlockLevel { Attempts = 3, BlockMinutes = 20 } };
         private volatile TelegramConfig? telegramConfig = null;
         private volatile AntiBruteConfig antiBruteConfig = AntiBruteConfig.CreateDefault();
+        private Thread telegramCommandThread = null!;
+        private long telegramUpdateOffset = 0;
+        private bool telegramCommandBootstrapDone = false;
         // private volatile GateConfig gateConfig = new GateConfig { Enabled = false, ListenPort = 3389, TargetHost = "127.0.0.1", TargetPort = 3389 };
 
         // private TcpListener gateListener;
@@ -203,6 +218,8 @@ class Program
             monitorThread.IsBackground = true;
             monitorThread.Start();
 
+            StartTelegramCommandWatcher();
+
             // Watch for changes in whitelist and blocklist to update firewall rule
             try
             {
@@ -246,6 +263,13 @@ class Program
 
             if (monitorThread != null)
                 monitorThread.Join(5000);
+
+            try
+            {
+                if (telegramCommandThread != null && telegramCommandThread.IsAlive)
+                    telegramCommandThread.Join(5000);
+            }
+            catch { }
 
             // Gate functionality disabled
             // try
@@ -325,7 +349,7 @@ class Program
             }
         }
 
-        private void OnFailedLogonEventRecordWritten(object sender, EventRecordWrittenEventArgs e)
+        private void OnFailedLogonEventRecordWritten(object? sender, EventRecordWrittenEventArgs e)
         {
             if (!isRunning)
                 return;
@@ -441,41 +465,461 @@ class Program
                 }
 
                 WriteLog($"Sending Telegram notification: {message}");
-                
-                using (var client = new System.Net.Http.HttpClient())
-                {
-                    client.Timeout = TimeSpan.FromSeconds(10);
-                    var url = $"https://api.telegram.org/bot{cfg.BotToken}/sendMessage";
-                    var content = new System.Net.Http.FormUrlEncodedContent(new[]
-                    {
-                        new KeyValuePair<string, string>("chat_id", cfg.ChatId),
-                        new KeyValuePair<string, string>("text", message)
-                    });
-                    
-                    var task = client.PostAsync(url, content);
-                    task.Wait(TimeSpan.FromSeconds(10));
-                    
-                    if (task.IsCompletedSuccessfully)
-                    {
-                        var response = task.Result;
-                        if (response.IsSuccessStatusCode)
-                        {
-                            WriteLog($"Telegram notification sent successfully");
-                        }
-                        else
-                        {
-                            WriteLog($"Service notification failed: {response.StatusCode}");
-                        }
-                    }
-                    else if (task.IsFaulted)
-                    {
-                        WriteLog($"Service notification request failed: {task.Exception?.InnerException?.Message}");
-                    }
-                }
+                TrySendTelegramText(cfg.ChatId, message);
             }
             catch (Exception ex)
             {
                 WriteLog($"Service notification error: {ex.Message}");
+            }
+        }
+
+        private bool TrySendTelegramText(string chatId, string message)
+        {
+            try
+            {
+                var cfg = telegramConfig;
+                if (cfg == null || !cfg.Enabled || string.IsNullOrWhiteSpace(cfg.BotToken) || string.IsNullOrWhiteSpace(chatId))
+                    return false;
+
+                using (var client = new System.Net.Http.HttpClient())
+                {
+                    client.Timeout = TimeSpan.FromSeconds(15);
+                    var url = $"https://api.telegram.org/bot{cfg.BotToken}/sendMessage";
+                    var content = new System.Net.Http.FormUrlEncodedContent(new[]
+                    {
+                        new KeyValuePair<string, string>("chat_id", chatId),
+                        new KeyValuePair<string, string>("text", message)
+                    });
+
+                    var task = client.PostAsync(url, content);
+                    task.Wait(TimeSpan.FromSeconds(15));
+                    if (!task.IsCompletedSuccessfully)
+                    {
+                        if (task.IsFaulted)
+                            WriteLog($"Telegram send failed: {task.Exception?.InnerException?.Message}");
+                        return false;
+                    }
+
+                    var response = task.Result;
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        WriteLog($"Telegram send failed: {response.StatusCode}");
+                        return false;
+                    }
+
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram send error: {ex.Message}");
+                return false;
+            }
+        }
+
+        private void StartTelegramCommandWatcher()
+        {
+            try
+            {
+                telegramCommandThread = new Thread(MonitorTelegramCommands);
+                telegramCommandThread.IsBackground = true;
+                telegramCommandThread.Start();
+                WriteLog("Telegram command watcher started.");
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram command watcher start error: {ex.Message}");
+            }
+        }
+
+        private void MonitorTelegramCommands()
+        {
+            while (isRunning)
+            {
+                try
+                {
+                    PollTelegramCommands();
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Telegram command poll error: {ex.Message}");
+                }
+
+                Thread.Sleep(1500);
+            }
+        }
+
+        private void PollTelegramCommands()
+        {
+            var cfg = telegramConfig;
+            if (cfg == null || !cfg.Enabled || string.IsNullOrWhiteSpace(cfg.BotToken) || string.IsNullOrWhiteSpace(cfg.ChatId))
+                return;
+
+            using (var client = new System.Net.Http.HttpClient())
+            {
+                client.Timeout = TimeSpan.FromSeconds(35);
+                string url = $"https://api.telegram.org/bot{cfg.BotToken}/getUpdates?offset={telegramUpdateOffset}&timeout=25";
+                var task = client.GetAsync(url);
+                task.Wait(TimeSpan.FromSeconds(35));
+                if (!task.IsCompletedSuccessfully)
+                    return;
+
+                var response = task.Result;
+                if (!response.IsSuccessStatusCode)
+                {
+                    WriteLog($"Telegram getUpdates failed: {response.StatusCode}");
+                    return;
+                }
+
+                string json = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                using (JsonDocument document = JsonDocument.Parse(json))
+                {
+                    if (!document.RootElement.TryGetProperty("ok", out JsonElement okElement) || !okElement.GetBoolean())
+                        return;
+
+                    if (!document.RootElement.TryGetProperty("result", out JsonElement resultElement) || resultElement.ValueKind != JsonValueKind.Array)
+                        return;
+
+                    long maxUpdateId = telegramUpdateOffset - 1;
+                    if (!telegramCommandBootstrapDone)
+                    {
+                        foreach (JsonElement update in resultElement.EnumerateArray())
+                        {
+                            if (update.TryGetProperty("update_id", out JsonElement updateIdElement) && updateIdElement.TryGetInt64(out long bootstrapUpdateId))
+                                maxUpdateId = Math.Max(maxUpdateId, bootstrapUpdateId);
+                        }
+
+                        telegramCommandBootstrapDone = true;
+                        if (maxUpdateId >= telegramUpdateOffset)
+                        {
+                            telegramUpdateOffset = maxUpdateId + 1;
+                            WriteLog($"Telegram command watcher skipped backlog up to update_id={maxUpdateId}");
+                        }
+                        return;
+                    }
+
+                    foreach (JsonElement update in resultElement.EnumerateArray())
+                    {
+                        if (!update.TryGetProperty("update_id", out JsonElement updateIdElement) || !updateIdElement.TryGetInt64(out long updateId))
+                            continue;
+
+                        maxUpdateId = Math.Max(maxUpdateId, updateId);
+
+                        if (!update.TryGetProperty("message", out JsonElement messageElement))
+                            continue;
+
+                        if (!messageElement.TryGetProperty("chat", out JsonElement chatElement))
+                            continue;
+
+                        string incomingChatId = chatElement.TryGetProperty("id", out JsonElement chatIdElement)
+                            ? chatIdElement.ToString()
+                            : string.Empty;
+
+                        if (!string.Equals(incomingChatId, cfg.ChatId, StringComparison.Ordinal))
+                        {
+                            WriteLog($"Ignoring Telegram command from unauthorized chat: {incomingChatId}");
+                            continue;
+                        }
+
+                        string text = messageElement.TryGetProperty("text", out JsonElement textElement)
+                            ? textElement.GetString() ?? string.Empty
+                            : string.Empty;
+
+                        if (!string.IsNullOrWhiteSpace(text))
+                            HandleTelegramCommand(incomingChatId, text);
+                    }
+
+                    if (maxUpdateId >= telegramUpdateOffset)
+                        telegramUpdateOffset = maxUpdateId + 1;
+                }
+            }
+        }
+
+        private void HandleTelegramCommand(string chatId, string text)
+        {
+            try
+            {
+                string trimmed = (text ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(trimmed))
+                    return;
+
+                string[] parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0)
+                    return;
+
+                string command = parts[0];
+                int atIndex = command.IndexOf('@');
+                if (atIndex >= 0)
+                    command = command.Substring(0, atIndex);
+
+                command = command.ToLowerInvariant();
+                if (command == "/status")
+                {
+                    if (parts.Length < 2)
+                    {
+                        TrySendTelegramText(chatId, BuildSystemStatusReply());
+                        return;
+                    }
+
+                    TrySendTelegramText(chatId, BuildIpStatusReply(parts[1]));
+                    return;
+                }
+
+                if (command == "/unblock")
+                {
+                    if (parts.Length < 2)
+                    {
+                        TrySendTelegramText(chatId, "Usage: /unblock <ip>");
+                        return;
+                    }
+
+                    TrySendTelegramText(chatId, UnblockIpFromTelegram(parts[1]));
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram command handling error: {ex.Message}");
+            }
+        }
+
+        private string BuildIpStatusReply(string ipAddress)
+        {
+            if (!IPAddress.TryParse(ipAddress, out IPAddress parsedIp))
+                return $"Invalid IP: {ipAddress}";
+
+            string ip = parsedIp.ToString();
+            bool isWhitelisted = IsIPWhitelisted(ip);
+            bool directBlocked = TryGetActiveDirectBlock(ip, out DateTime directUntilLocal, out int directMinutes);
+            bool subnetBlocked = TryGetActiveSubnetBlock(ip, out string subnet, out DateTime subnetUntilLocal);
+            bool protectedIp = IsLocalOrPrivateIp(ip);
+
+            var lines = new List<string>
+            {
+                $"IP: {ip}",
+                $"Protected local/private: {(protectedIp ? "yes" : "no")}",
+                $"Whitelisted: {(isWhitelisted ? "yes" : "no")}",
+                directBlocked
+                    ? $"Direct block: active until {directUntilLocal:yyyy-MM-dd HH:mm:ss} ({directMinutes} min)"
+                    : "Direct block: none",
+                subnetBlocked
+                    ? $"Subnet block: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}"
+                    : "Subnet block: none"
+            };
+
+            string effectiveStatus = (directBlocked || subnetBlocked) && !isWhitelisted
+                ? "BLOCKED"
+                : "NOT BLOCKED";
+            lines.Add($"Effective status: {effectiveStatus}");
+
+            return string.Join("`n", lines);
+        }
+
+        private string BuildSystemStatusReply()
+        {
+            string serviceStatus = GetServiceStatusSummary();
+            bool localEngineRunning = IsProcessRunning("WinService");
+            bool monitorRunning = IsProcessRunning("RDPMonitor");
+
+            var lines = new List<string>
+            {
+                "System status:",
+                $"Service: {serviceStatus}",
+                $"Local engine (WinService.exe): {(localEngineRunning ? "RUNNING" : "STOPPED")}",
+                $"Monitor (RDPMonitor.exe): {(monitorRunning ? "RUNNING" : "STOPPED")}"
+            };
+
+            return string.Join("`n", lines);
+        }
+
+        private string UnblockIpFromTelegram(string ipAddress)
+        {
+            if (!IPAddress.TryParse(ipAddress, out IPAddress parsedIp))
+                return $"Invalid IP: {ipAddress}";
+
+            string ip = parsedIp.ToString();
+            int removedLines = 0;
+
+            try
+            {
+                lock (logLock)
+                {
+                    if (File.Exists(blockListLogPath))
+                    {
+                        var keptLines = new List<string>();
+                        foreach (string line in File.ReadAllLines(blockListLogPath))
+                        {
+                            string target = ExtractBlockedTargetFromLine(line);
+                            if (!string.IsNullOrWhiteSpace(target)
+                                && !target.Contains("/", StringComparison.Ordinal)
+                                && target.Equals(ip, StringComparison.OrdinalIgnoreCase))
+                            {
+                                removedLines++;
+                                continue;
+                            }
+
+                            keptLines.Add(line);
+                        }
+
+                        File.WriteAllLines(blockListLogPath, keptLines);
+                    }
+                }
+
+                bans.Remove(ip);
+                lock (failedAttemptsLock)
+                {
+                    failedAttempts.Remove(ip);
+                }
+
+                RequestFirewallSync(force: true);
+
+                bool subnetBlocked = TryGetActiveSubnetBlock(ip, out string subnet, out DateTime subnetUntilLocal);
+                if (removedLines > 0)
+                {
+                    WriteLog($"Telegram manual unblock: {ip}, removed_entries={removedLines}");
+                    return subnetBlocked
+                        ? $"Unblocked direct IP entries for {ip}. Subnet block still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}"
+                        : $"Unblocked {ip}. Removed {removedLines} direct block entries.";
+                }
+
+                return subnetBlocked
+                    ? $"No direct IP block found for {ip}. Subnet block is still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}"
+                    : $"No direct IP block found for {ip}.";
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram unblock error for {ip}: {ex.Message}");
+                return $"Failed to unblock {ip}: {ex.Message}";
+            }
+        }
+
+        private bool TryGetActiveDirectBlock(string ipAddress, out DateTime untilLocal, out int blockMinutesValue)
+        {
+            untilLocal = default;
+            blockMinutesValue = 0;
+            if (string.IsNullOrWhiteSpace(ipAddress) || !File.Exists(blockListLogPath))
+                return false;
+
+            DateTime nowLocal = DateTime.Now;
+            bool found = false;
+            lock (logLock)
+            {
+                foreach (string line in File.ReadAllLines(blockListLogPath))
+                {
+                    string target = ExtractBlockedTargetFromLine(line);
+                    if (string.IsNullOrWhiteSpace(target)
+                        || target.Contains("/", StringComparison.Ordinal)
+                        || !target.Equals(ipAddress, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (IsBlockEntryExpired(line, nowLocal, out DateTime candidateUntil))
+                        continue;
+
+                    untilLocal = candidateUntil;
+                    blockMinutesValue = ExtractBlockMinutesFromBlockLogLine(line);
+                    found = true;
+                }
+            }
+
+            return found;
+        }
+
+        private bool TryGetActiveSubnetBlock(string ipAddress, out string subnetCidr, out DateTime untilLocal)
+        {
+            subnetCidr = string.Empty;
+            untilLocal = default;
+            if (string.IsNullOrWhiteSpace(ipAddress) || !File.Exists(blockListLogPath))
+                return false;
+
+            DateTime nowLocal = DateTime.Now;
+            bool found = false;
+            lock (logLock)
+            {
+                foreach (string line in File.ReadAllLines(blockListLogPath))
+                {
+                    string target = ExtractBlockedTargetFromLine(line);
+                    if (string.IsNullOrWhiteSpace(target)
+                        || !target.Contains("/", StringComparison.Ordinal)
+                        || !IsIpv4InSubnet24(ipAddress, target))
+                    {
+                        continue;
+                    }
+
+                    if (IsBlockEntryExpired(line, nowLocal, out DateTime candidateUntil))
+                        continue;
+
+                    subnetCidr = target;
+                    untilLocal = candidateUntil;
+                    found = true;
+                }
+            }
+
+            return found;
+        }
+
+        private bool IsBlockEntryExpired(string line, DateTime nowLocal, out DateTime untilLocal)
+        {
+            untilLocal = default;
+            if (TryParseUntilFromBlockLogLine(line, out untilLocal))
+                return nowLocal > untilLocal;
+
+            if (TryParseBlockLogTimestamp(line, out DateTime tsLocal))
+            {
+                untilLocal = tsLocal.AddMinutes(Math.Max(1, blockMinutes));
+                return nowLocal > untilLocal;
+            }
+
+            return true;
+        }
+
+        private int ExtractBlockMinutesFromBlockLogLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return Math.Max(1, blockMinutes);
+
+            int idx = line.IndexOf("BlockMinutes:", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+                return Math.Max(1, blockMinutes);
+
+            string tail = line.Substring(idx + 13).Trim();
+            if (tail.Contains("|"))
+                tail = tail.Split('|')[0].Trim();
+
+            return int.TryParse(tail, out int parsed)
+                ? Math.Max(1, parsed)
+                : Math.Max(1, blockMinutes);
+        }
+
+        private string GetServiceStatusSummary()
+        {
+            try
+            {
+                var service = ServiceController.GetServices().FirstOrDefault(s => s.ServiceName == "RDPSecurityService");
+                if (service == null)
+                    return IsProcessRunning("WinService")
+                        ? "NOT INSTALLED (local WinService.exe is RUNNING)"
+                        : "NOT INSTALLED";
+
+                service.Refresh();
+                return $"{service.Status} | Startup: {service.StartType}";
+            }
+            catch (Exception ex)
+            {
+                return $"ERROR: {ex.Message}";
+            }
+        }
+
+        private bool IsProcessRunning(string processName)
+        {
+            try
+            {
+                return Process.GetProcessesByName(processName).Any();
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -517,7 +961,7 @@ class Program
 
         private void RegisterTcpProbe(string remoteIp, int remotePort, TcpState state, DateTime nowLocal)
         {
-            if (!tcpProbeHits.TryGetValue(remoteIp, out List<DateTime> hits))
+            if (!tcpProbeHits.TryGetValue(remoteIp, out List<DateTime>? hits))
             {
                 hits = new List<DateTime>();
                 tcpProbeHits[remoteIp] = hits;
@@ -902,7 +1346,7 @@ class Program
                 return false;
 
             int uniqueCount;
-            if (!sprayByUser.TryGetValue(userKey, out SprayState state))
+            if (!sprayByUser.TryGetValue(userKey, out SprayState? state))
             {
                 state = new SprayState();
                 sprayByUser[userKey] = state;
@@ -1030,7 +1474,7 @@ class Program
             if (recentUniqueIps < uniqueIpsThreshold)
                 return;
 
-            if (subnetBans.TryGetValue(subnet, out BanState state))
+            if (subnetBans.TryGetValue(subnet, out BanState? state))
             {
                 if (nowLocal <= state.UntilLocal)
                     return;
@@ -1107,7 +1551,7 @@ class Program
             return uniqueIps.Count;
         }
 
-        private string GetSubnet24(string ipAddress)
+        private string? GetSubnet24(string ipAddress)
         {
             if (!IPAddress.TryParse(ipAddress, out IPAddress ip))
                 return null;
@@ -1148,7 +1592,7 @@ class Program
             return false;
         }
 
-        private bool TryParseSubnet24(string subnetCidr, out byte[] netBytes)
+        private bool TryParseSubnet24(string subnetCidr, out byte[]? netBytes)
         {
             netBytes = null;
             if (string.IsNullOrWhiteSpace(subnetCidr))
@@ -1171,16 +1615,16 @@ class Program
             {
                 // small debounce
                 Thread.Sleep(200);
-                if (e.Name.Equals("block_list.log", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(e.Name, "block_list.log", StringComparison.OrdinalIgnoreCase))
                 {
                     RequestFirewallSync();
                 }
-                else if (e.Name.Equals("whiteList.log", StringComparison.OrdinalIgnoreCase))
+                else if (string.Equals(e.Name, "whiteList.log", StringComparison.OrdinalIgnoreCase))
                 {
                     // whitelist changed: ensure no whitelisted IP remains in firewall block list
                     RequestFirewallSync();
                 }
-                else if (e.Name.Equals("config.json", StringComparison.OrdinalIgnoreCase))
+                else if (string.Equals(e.Name, "config.json", StringComparison.OrdinalIgnoreCase))
                 {
                     LoadOrCreateConfig();
                     RequestFirewallSync();
@@ -1550,6 +1994,9 @@ class Program
                         };
                         using (var checkProc = Process.Start(checkPsi))
                         {
+                            if (checkProc == null)
+                                return;
+
                             checkProc.WaitForExit(3000);
                             if (checkProc.ExitCode != 0)
                             {
@@ -1570,6 +2017,9 @@ class Program
                         };
                         using (var p = Process.Start(psi))
                         {
+                            if (p == null)
+                                return;
+
                             p.WaitForExit(5000);
                             if (p.ExitCode == 0)
                             {
@@ -1629,11 +2079,16 @@ class Program
                         };
                         using (var p = Process.Start(checkPsi))
                         {
+                            if (p == null)
+                                ruleExists = false;
+                            else
+                            {
                             string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
                             p.WaitForExit(5000);
                             ruleExists = p.ExitCode == 0 && (
                                 output.IndexOf("Rule Name", StringComparison.OrdinalIgnoreCase) >= 0
                                 || output.IndexOf("Имя правила", StringComparison.OrdinalIgnoreCase) >= 0);
+                            }
                         }
                     }
                     catch { }
@@ -1652,6 +2107,12 @@ class Program
                         };
                         using (var p = Process.Start(setPsi))
                         {
+                            if (p == null)
+                            {
+                                WriteLog("RDP_BLOCK_ALL netsh set failed: process start returned null");
+                                goto TryAddFirewallRule;
+                            }
+
                             string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
                             p.WaitForExit(15000);
                             if (p.ExitCode == 0 || output.IndexOf("Ok", StringComparison.OrdinalIgnoreCase) >= 0 || output.IndexOf("ОК", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1665,6 +2126,7 @@ class Program
                     }
 
                     // If rule doesn't exist (or set failed), try "add rule".
+                TryAddFirewallRule:
                     var addPsi = new ProcessStartInfo
                     {
                         FileName = "netsh.exe",
@@ -1676,6 +2138,12 @@ class Program
                     };
                     using (var p = Process.Start(addPsi))
                     {
+                        if (p == null)
+                        {
+                            WriteLog("RDP_BLOCK_ALL netsh add failed: process start returned null");
+                            return;
+                        }
+
                         string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
                         p.WaitForExit(15000);
                         if (p.ExitCode == 0 || output.IndexOf("Ok", StringComparison.OrdinalIgnoreCase) >= 0 || output.IndexOf("ОК", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1739,6 +2207,9 @@ class Program
                 };
                 using (var p = Process.Start(psi))
                 {
+                    if (p == null)
+                        return false;
+
                     output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
                     p.WaitForExit(10000);
                     return p.ExitCode == 0;
@@ -1845,7 +2316,7 @@ class Program
             return set;
         }
 
-        private string ExtractBlockedTargetFromLine(string line)
+        private string? ExtractBlockedTargetFromLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line))
                 return null;
@@ -1867,9 +2338,9 @@ class Program
             return null;
         }
 
-        private string ExtractBlockedIpFromLine(string line)
+        private string? ExtractBlockedIpFromLine(string line)
         {
-            string target = ExtractBlockedTargetFromLine(line);
+            string? target = ExtractBlockedTargetFromLine(line);
             if (string.IsNullOrWhiteSpace(target) || target.Contains("/", StringComparison.Ordinal))
                 return null;
 
@@ -1902,7 +2373,7 @@ class Program
             {
                 lock (configLock)
                 {
-                    ServiceConfig cfg = null;
+                    ServiceConfig? cfg = null;
                     bool shouldRewriteConfig = false;
                     if (File.Exists(configPath))
                     {
@@ -2000,7 +2471,7 @@ class Program
             return cfg;
         }
 
-        private BlockLevel GetLevelForAttempts(int attempts)
+        private BlockLevel? GetLevelForAttempts(int attempts)
         {
             if (attempts <= 0)
                 return null;
@@ -2008,7 +2479,7 @@ class Program
             // Highest level that matches current attempts count (or lower)
             // This way, if we missed some attempts due to polling intervals, we still apply the right (strongest) ban.
             var levels = blockLevels;
-            BlockLevel match = null;
+            BlockLevel? match = null;
             for (int i = 0; i < levels.Count; i++)
             {
                 var l = levels[i];
@@ -2022,8 +2493,7 @@ class Program
         {
             try
             {
-                BanState s;
-                if (bans.TryGetValue(ip, out s))
+                if (bans.TryGetValue(ip, out BanState? s))
                 {
                     if (nowLocal <= s.UntilLocal)
                     {
@@ -2226,4 +2696,5 @@ class Program
             AllowTrailingCommas = true
         };
     }
+
 
