@@ -694,6 +694,20 @@ class Program
                     return;
                 }
 
+                if (command == "/ban")
+                {
+                    if (parts.Length < 3)
+                    {
+                        TrySendTelegramText(chatId, UiText(
+                            "Використання: /ban <ip> <тривалість>\nПриклади: /ban 1.2.3.4 1d | 6h | 30m | 1440",
+                            "Usage: /ban <ip> <duration>\nExamples: /ban 1.2.3.4 1d | 6h | 30m | 1440"));
+                        return;
+                    }
+
+                    TrySendTelegramText(chatId, ManualBanIpFromTelegram(parts[1], parts[2]));
+                    return;
+                }
+
                 if (command == "/unblock")
                 {
                     if (parts.Length < 2)
@@ -734,12 +748,87 @@ class Program
                        "/status all — list all active blocks"),
                 UiText("/status <ip> — детальний стан конкретного IP",
                        "/status <ip> — detailed info for a specific IP"),
+                UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
+                       "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
                 UiText("/unblock <ip> — зняти пряме блокування з IP",
                        "/unblock <ip> — remove direct block from IP"),
                 UiText("/? або /help — ця довідка",
                        "/? or /help — this help message"),
             };
             return string.Join("\n", lines);
+        }
+
+        private string ManualBanIpFromTelegram(string ipAddress, string durationStr)
+        {
+            if (!IPAddress.TryParse(ipAddress, out IPAddress parsedIp))
+                return UiText($"Некоректний IP: {ipAddress}", $"Invalid IP: {ipAddress}");
+
+            string ip = parsedIp.ToString();
+
+            if (IsLocalOrPrivateIp(ip))
+                return UiText($"IP {ip} є локальним/приватним — блокування заборонено.",
+                               $"IP {ip} is local/private — blocking not allowed.");
+
+            if (IsIPWhitelisted(ip))
+                return UiText($"IP {ip} у білому списку — блокування заборонено.",
+                               $"IP {ip} is whitelisted — blocking not allowed.");
+
+            if (!TryParseDuration(durationStr, out int minutes) || minutes <= 0)
+                return UiText(
+                    $"Некоректна тривалість: '{durationStr}'.\nПриклади: 1d, 6h, 30m, 1440",
+                    $"Invalid duration: '{durationStr}'.\nExamples: 1d, 6h, 30m, 1440");
+
+            try
+            {
+                DateTime nowLocal = DateTime.Now;
+                DateTime untilLocal = nowLocal.AddMinutes(minutes);
+
+                string logEntry =
+                    $"[{nowLocal:yyyy-MM-dd HH:mm:ss}] BLOCKED IP: {ip} | Failed Attempts: 0 | BlockMinutes: {minutes} | Until: {untilLocal:yyyy-MM-dd HH:mm:ss} | Source: manual";
+
+                lock (logLock)
+                {
+                    File.AppendAllText(blockListLogPath, logEntry + Environment.NewLine, Encoding.UTF8);
+                }
+
+                RequestFirewallSync(force: true);
+
+                string dur = minutes >= 1440
+                    ? $"{minutes / 1440}д {(minutes % 1440 > 0 ? $"{minutes % 1440 / 60}г" : "")}".Trim()
+                    : minutes >= 60
+                        ? $"{minutes / 60}г {(minutes % 60 > 0 ? $"{minutes % 60}хв" : "")}".Trim()
+                        : $"{minutes}хв";
+
+                WriteLog($"Telegram manual ban: {ip}, minutes={minutes}, until={untilLocal:yyyy-MM-dd HH:mm:ss}");
+
+                return UiText(
+                    $"🔒 IP {ip} заблоковано на {dur}.\nДо: {untilLocal:yyyy-MM-dd HH:mm:ss}",
+                    $"🔒 IP {ip} blocked for {dur}.\nUntil: {untilLocal:yyyy-MM-dd HH:mm:ss}");
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram manual ban error for {ip}: {ex.Message}");
+                return UiText($"Помилка блокування {ip}: {ex.Message}",
+                               $"Failed to ban {ip}: {ex.Message}");
+            }
+        }
+
+        private static bool TryParseDuration(string s, out int minutes)
+        {
+            minutes = 0;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            s = s.Trim().ToLowerInvariant();
+
+            if (s.EndsWith("d") && int.TryParse(s.TrimEnd('d'), out int days) && days > 0)
+            { minutes = days * 1440; return true; }
+            if (s.EndsWith("h") && int.TryParse(s.TrimEnd('h'), out int hours) && hours > 0)
+            { minutes = hours * 60; return true; }
+            if (s.EndsWith("m") && int.TryParse(s.TrimEnd('m'), out int mins) && mins > 0)
+            { minutes = mins; return true; }
+            if (int.TryParse(s, out int plain) && plain > 0)
+            { minutes = plain; return true; }
+
+            return false;
         }
 
         private string BuildAllBlocksReply()
