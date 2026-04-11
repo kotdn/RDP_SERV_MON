@@ -670,6 +670,12 @@ class Program
                     command = command.Substring(0, atIndex);
 
                 command = command.ToLowerInvariant();
+                if (command == "/?" || command == "/help")
+                {
+                    TrySendTelegramText(chatId, BuildHelpReply());
+                    return;
+                }
+
                 if (command == "/status")
                 {
                     if (parts.Length < 2)
@@ -714,6 +720,26 @@ class Program
         private string UiText(string ua, string en)
         {
             return IsUiLanguageUa() ? ua : en;
+        }
+
+        private string BuildHelpReply()
+        {
+            var lines = new List<string>
+            {
+                UiText("📋 Доступні команди:", "📋 Available commands:"),
+                "",
+                UiText("/status — стан системи (служба, процеси)",
+                       "/status — system state (service, processes)"),
+                UiText("/status all — список усіх активних блокувань",
+                       "/status all — list all active blocks"),
+                UiText("/status <ip> — детальний стан конкретного IP",
+                       "/status <ip> — detailed info for a specific IP"),
+                UiText("/unblock <ip> — зняти пряме блокування з IP",
+                       "/unblock <ip> — remove direct block from IP"),
+                UiText("/? або /help — ця довідка",
+                       "/? or /help — this help message"),
+            };
+            return string.Join("\n", lines);
         }
 
         private string BuildAllBlocksReply()
