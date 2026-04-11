@@ -150,6 +150,7 @@ class Program
         private volatile int rdpPort = DEFAULT_RDP_PORT;
         private volatile List<BlockLevel> blockLevels = new List<BlockLevel> { new BlockLevel { Attempts = 3, BlockMinutes = 20 } };
         private volatile TelegramConfig? telegramConfig = null;
+        private volatile string uiLanguage = "UA";
         private volatile AntiBruteConfig antiBruteConfig = AntiBruteConfig.CreateDefault();
         private Thread telegramCommandThread = null!;
         private long telegramUpdateOffset = 0;
@@ -481,6 +482,8 @@ class Program
                 if (cfg == null || !cfg.Enabled || string.IsNullOrWhiteSpace(cfg.BotToken) || string.IsNullOrWhiteSpace(chatId))
                     return false;
 
+                string normalizedMessage = NormalizeTelegramText(message);
+
                 using (var client = new System.Net.Http.HttpClient())
                 {
                     client.Timeout = TimeSpan.FromSeconds(15);
@@ -488,7 +491,7 @@ class Program
                     var content = new System.Net.Http.FormUrlEncodedContent(new[]
                     {
                         new KeyValuePair<string, string>("chat_id", chatId),
-                        new KeyValuePair<string, string>("text", message)
+                        new KeyValuePair<string, string>("text", normalizedMessage)
                     });
 
                     var task = client.PostAsync(url, content);
@@ -515,6 +518,20 @@ class Program
                 WriteLog($"Telegram send error: {ex.Message}");
                 return false;
             }
+        }
+
+        private static string NormalizeTelegramText(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+                return string.Empty;
+
+            return message
+                .Replace("`r`n", "\n")
+                .Replace("`n", "\n")
+                .Replace("\\r\\n", "\n")
+                .Replace("\\n", "\n")
+                .Replace("\r\n", "\n")
+                .Replace("\r", "\n");
         }
 
         private void StartTelegramCommandWatcher()
@@ -669,7 +686,7 @@ class Program
                 {
                     if (parts.Length < 2)
                     {
-                        TrySendTelegramText(chatId, "Usage: /unblock <ip>");
+                        TrySendTelegramText(chatId, UiText("Використання: /unblock <ip>", "Usage: /unblock <ip>"));
                         return;
                     }
 
@@ -683,10 +700,20 @@ class Program
             }
         }
 
+        private bool IsUiLanguageUa()
+        {
+            return !string.Equals(uiLanguage, "EN", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string UiText(string ua, string en)
+        {
+            return IsUiLanguageUa() ? ua : en;
+        }
+
         private string BuildIpStatusReply(string ipAddress)
         {
             if (!IPAddress.TryParse(ipAddress, out IPAddress parsedIp))
-                return $"Invalid IP: {ipAddress}";
+                return UiText($"Некоректний IP: {ipAddress}", $"Invalid IP: {ipAddress}");
 
             string ip = parsedIp.ToString();
             bool isWhitelisted = IsIPWhitelisted(ip);
@@ -697,22 +724,22 @@ class Program
             var lines = new List<string>
             {
                 $"IP: {ip}",
-                $"Protected local/private: {(protectedIp ? "yes" : "no")}",
-                $"Whitelisted: {(isWhitelisted ? "yes" : "no")}",
+                $"{UiText("Локальна/приватна адреса", "Protected local/private")}: {(protectedIp ? UiText("так", "yes") : UiText("ні", "no"))}",
+                $"{UiText("У білому списку", "Whitelisted")}: {(isWhitelisted ? UiText("так", "yes") : UiText("ні", "no"))}",
                 directBlocked
-                    ? $"Direct block: active until {directUntilLocal:yyyy-MM-dd HH:mm:ss} ({directMinutes} min)"
-                    : "Direct block: none",
+                    ? UiText($"Пряме блокування: активне до {directUntilLocal:yyyy-MM-dd HH:mm:ss} ({directMinutes} хв)", $"Direct block: active until {directUntilLocal:yyyy-MM-dd HH:mm:ss} ({directMinutes} min)")
+                    : UiText("Пряме блокування: немає", "Direct block: none"),
                 subnetBlocked
-                    ? $"Subnet block: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}"
-                    : "Subnet block: none"
+                    ? UiText($"Блокування підмережі: {subnet} до {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}", $"Subnet block: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}")
+                    : UiText("Блокування підмережі: немає", "Subnet block: none")
             };
 
             string effectiveStatus = (directBlocked || subnetBlocked) && !isWhitelisted
-                ? "BLOCKED"
-                : "NOT BLOCKED";
-            lines.Add($"Effective status: {effectiveStatus}");
+                ? UiText("ЗАБЛОКОВАНО", "BLOCKED")
+                : UiText("НЕ ЗАБЛОКОВАНО", "NOT BLOCKED");
+            lines.Add($"{UiText("Загальний статус", "Effective status")}: {effectiveStatus}");
 
-            return string.Join("`n", lines);
+            return string.Join("\n", lines);
         }
 
         private string BuildSystemStatusReply()
@@ -723,19 +750,19 @@ class Program
 
             var lines = new List<string>
             {
-                "System status:",
-                $"Service: {serviceStatus}",
-                $"Local engine (WinService.exe): {(localEngineRunning ? "RUNNING" : "STOPPED")}",
-                $"Monitor (RDPMonitor.exe): {(monitorRunning ? "RUNNING" : "STOPPED")}"
+                UiText("Стан системи:", "System status:"),
+                $"{UiText("Служба", "Service")}: {serviceStatus}",
+                $"{UiText("Процес служби (WinService.exe)", "Service process (WinService.exe)")}: {(localEngineRunning ? UiText("ПРАЦЮЄ", "RUNNING") : UiText("ЗУПИНЕНО", "STOPPED"))}",
+                $"{UiText("Монітор (RDPMonitor.exe)", "Monitor (RDPMonitor.exe)")}: {(monitorRunning ? UiText("ПРАЦЮЄ", "RUNNING") : UiText("ЗУПИНЕНО", "STOPPED"))}"
             };
 
-            return string.Join("`n", lines);
+            return string.Join("\n", lines);
         }
 
         private string UnblockIpFromTelegram(string ipAddress)
         {
             if (!IPAddress.TryParse(ipAddress, out IPAddress parsedIp))
-                return $"Invalid IP: {ipAddress}";
+                return UiText($"Некоректний IP: {ipAddress}", $"Invalid IP: {ipAddress}");
 
             string ip = parsedIp.ToString();
             int removedLines = 0;
@@ -778,18 +805,18 @@ class Program
                 {
                     WriteLog($"Telegram manual unblock: {ip}, removed_entries={removedLines}");
                     return subnetBlocked
-                        ? $"Unblocked direct IP entries for {ip}. Subnet block still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}"
-                        : $"Unblocked {ip}. Removed {removedLines} direct block entries.";
+                        ? UiText($"Пряме блокування IP {ip} знято. Блокування підмережі ще активне: {subnet} до {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}", $"Unblocked direct IP entries for {ip}. Subnet block still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}")
+                        : UiText($"IP {ip} розблоковано. Видалено {removedLines} запис(ів).", $"Unblocked {ip}. Removed {removedLines} direct block entries.");
                 }
 
                 return subnetBlocked
-                    ? $"No direct IP block found for {ip}. Subnet block is still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}"
-                    : $"No direct IP block found for {ip}.";
+                    ? UiText($"Прямого блокування для {ip} не знайдено. Блокування підмережі ще активне: {subnet} до {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}", $"No direct IP block found for {ip}. Subnet block is still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}")
+                    : UiText($"Прямого блокування для {ip} не знайдено.", $"No direct IP block found for {ip}.");
             }
             catch (Exception ex)
             {
                 WriteLog($"Telegram unblock error for {ip}: {ex.Message}");
-                return $"Failed to unblock {ip}: {ex.Message}";
+                return UiText($"Не вдалося розблокувати {ip}: {ex.Message}", $"Failed to unblock {ip}: {ex.Message}");
             }
         }
 
@@ -1810,6 +1837,8 @@ class Program
                     .Replace("{duration}", blockMinutes.ToString())
                     .Replace("\\n", "\n");
 
+                message = NormalizeTelegramText(message);
+
                 using (var client = new System.Net.Http.HttpClient())
                 {
                     client.Timeout = TimeSpan.FromSeconds(10);
@@ -2431,6 +2460,12 @@ class Program
 
                     // Load Telegram configuration
                     telegramConfig = cfg.Telegram ?? new TelegramConfig { Enabled = false, BotToken = "", ChatId = "" };
+                    uiLanguage = string.Equals(cfg.UiLanguage, "EN", StringComparison.OrdinalIgnoreCase) ? "EN" : "UA";
+                    if (!string.Equals(cfg.UiLanguage, uiLanguage, StringComparison.OrdinalIgnoreCase))
+                    {
+                        cfg.UiLanguage = uiLanguage;
+                        shouldRewriteConfig = true;
+                    }
 
                     // Load anti-brute configuration
                     antiBruteConfig = NormalizeAntiBruteConfig(cfg.AntiBrute);
@@ -2520,6 +2555,9 @@ class Program
         [JsonPropertyName("port")]
         public int? Port { get; set; }
 
+        [JsonPropertyName("uiLanguage")]
+        public string UiLanguage { get; set; } = "UA";
+
         [JsonPropertyName("levels")]
         public List<BlockLevel> Levels { get; set; } = new List<BlockLevel>();
 
@@ -2553,6 +2591,7 @@ class Program
                         ["default"] = "🚨 RDP Security Alert\n\nBlocked IP: {ip}\nAttempts: {attempts}\nBan: {duration} min"
                     }
                 },
+                UiLanguage = "UA",
                 AntiBrute = AntiBruteConfig.CreateDefault()
             };
         }

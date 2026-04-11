@@ -126,7 +126,7 @@ namespace RDPMonitor
             base.OnShown(e);
             BeginInvoke(new Action(() =>
             {
-                NotifyMonitorLifecycle("MonitorStart", "🖥️ RDP Security Monitor запущено", fireAndForget: true);
+                NotifyMonitorLifecycle("MonitorStart", "\uD83D\uDDA5\uFE0F RDP Security Monitor \u0437\u0430\u043F\u0443\u0449\u0435\u043D\u043E", fireAndForget: true);
             }));
         }
 
@@ -2478,15 +2478,21 @@ namespace RDPMonitor
                 if (displayItems.Count == 0)
                     firewallReadFailed = !TryReadBlockedTargetsViaNetsh(displayItems, out firewallReadError);
 
+                bool firewallRuleMissing = IsMissingFirewallRuleMessage(firewallReadError);
+
                 // Fallback/merge: if monitor can't read firewall rule (UAC/permissions/policy),
                 // show what service considers blocked from block_list.log.
                 foreach (var t in ReadBlockedTargetsFromBlockListLog())
                     displayItems.Add(t);
 
-                if (firewallReadFailed && displayItems.Count == 0)
+                if (firewallReadFailed && firewallRuleMissing && displayItems.Count == 0)
                 {
-                    AppendLog($"[WARN] Can't read firewall rule RDP_BLOCK_ALL. Run monitor as Administrator. Details: {firewallReadError}");
-                    lstBannedIPs.Items.Add("⚠ Run monitor as Administrator to read firewall rules");
+                    AppendLog("[INFO] Firewall rule RDP_BLOCK_ALL does not exist yet.");
+                    lstBannedIPs.Items.Clear();
+                }
+                else if (firewallReadFailed && firewallRuleMissing && displayItems.Count > 0)
+                {
+                    AppendLog("[INFO] Firewall rule RDP_BLOCK_ALL does not exist; showing data from block_list.log.");
                 }
                 else if (firewallReadFailed && displayItems.Count > 0)
                 {
@@ -2595,6 +2601,17 @@ namespace RDPMonitor
                 errorDetails = ex.Message;
                 return false;
             }
+        }
+
+        private static bool IsMissingFirewallRuleMessage(string? details)
+        {
+            if (string.IsNullOrWhiteSpace(details))
+                return false;
+
+            string normalized = details.Trim();
+            return normalized.IndexOf("No rules match", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("No rules match the specified criteria", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("Ни одно правило не соответствует указанным критериям", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static void AddBlockedTarget(HashSet<string> targets, string rawValue)
@@ -2945,11 +2962,41 @@ namespace RDPMonitor
             }
 
             Program.CurrentLanguage = languageCode;
+            PersistUiLanguageToConfig();
             SyncLanguageMenuChecks();
             
             RefreshAllUITexts();
             
             LoadInitialData();
+        }
+
+        private void PersistUiLanguageToConfig()
+        {
+            try
+            {
+                string configPath = Path.Combine(LOG_DIR, "config.json");
+                if (!File.Exists(configPath))
+                    return;
+
+                var json = File.ReadAllText(configPath, Encoding.UTF8);
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var config = JsonSerializer.Deserialize<ServiceConfig>(json, options);
+                if (config == null)
+                    return;
+
+                config.UiLanguage = Program.CurrentLanguage;
+
+                var saveOptions = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                };
+                File.WriteAllText(configPath, JsonSerializer.Serialize(config, saveOptions), Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[WARN] Failed to persist UI language to config: {ex.Message}");
+            }
         }
 
         private void SyncLanguageMenuChecks()
@@ -3104,7 +3151,7 @@ namespace RDPMonitor
                 UpdateServiceStatus();
                 AppendLog("[MONITOR] Service started successfully");
                 if (ShouldNotify("ServiceStart"))
-                    SendSimpleTelegramMessage("✅ СЕРВІС ЗАПУЩЕНО");
+                    SendSimpleTelegramMessage("\u2705 \u0421\u0415\u0420\u0412\u0406\u0421 \u0417\u0410\u041F\u0423\u0429\u0415\u041D\u041E");
             }
             catch (Exception ex)
             {
@@ -3117,7 +3164,7 @@ namespace RDPMonitor
                         UpdateServiceStatus();
                         AppendLog("[MONITOR] Service started successfully");
                         if (ShouldNotify("ServiceStart"))
-                            SendSimpleTelegramMessage("✅ СЕРВІС ЗАПУЩЕНО");
+                            SendSimpleTelegramMessage("\u2705 \u0421\u0415\u0420\u0412\u0406\u0421 \u0417\u0410\u041F\u0423\u0429\u0415\u041D\u041E");
                         return;
                     }
 
@@ -3169,7 +3216,7 @@ namespace RDPMonitor
                 UpdateServiceStatus();
                 AppendLog("[MONITOR] Service stopped successfully");
                 if (ShouldNotify("ServiceStop"))
-                    SendSimpleTelegramMessage("🛑 СЕРВІС ЗУПИНЕНО");
+                    SendSimpleTelegramMessage("\uD83D\uDED1 \u0421\u0415\u0420\u0412\u0406\u0421 \u0417\u0423\u041F\u0418\u041D\u0415\u041D\u041E");
             }
             catch (Exception ex)
             {
@@ -3182,7 +3229,7 @@ namespace RDPMonitor
                         UpdateServiceStatus();
                         AppendLog("[MONITOR] Service stopped successfully");
                         if (ShouldNotify("ServiceStop"))
-                            SendSimpleTelegramMessage("🛑 СЕРВІС ЗУПИНЕНО");
+                            SendSimpleTelegramMessage("\uD83D\uDED1 \u0421\u0415\u0420\u0412\u0406\u0421 \u0417\u0423\u041F\u0418\u041D\u0415\u041D\u041E");
                         return;
                     }
 
@@ -3519,6 +3566,7 @@ namespace RDPMonitor
                 {
                     Port = 3389,
                     Ports = new List<int> { 3389 },
+                    UiLanguage = Program.CurrentLanguage,
                     Levels = new List<BlockLevel>
                     {
                         new BlockLevel { Attempts = 3, BlockMinutes = 30 },
@@ -3791,6 +3839,7 @@ namespace RDPMonitor
 
                 config.Port = port;
                 config.Ports = new List<int> { port };
+                config.UiLanguage = Program.CurrentLanguage;
                 config.Levels = levels;
                 config.AntiBrute = new AntiBruteConfig
                 {
@@ -3875,7 +3924,7 @@ namespace RDPMonitor
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            NotifyMonitorLifecycle("MonitorClose", "🖥️ RDP Security Monitor закрито", fireAndForget: false);
+            NotifyMonitorLifecycle("MonitorClose", "\uD83D\uDDA5\uFE0F RDP Security Monitor \u0437\u0430\u043A\u0440\u0438\u0442\u043E", fireAndForget: false);
             refreshTimer?.Stop();
             fileWatcher?.Dispose();
             base.OnFormClosing(e);
@@ -3886,6 +3935,9 @@ namespace RDPMonitor
     {
         [System.Text.Json.Serialization.JsonPropertyName("port")]
         public int Port { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("uiLanguage")]
+        public string UiLanguage { get; set; } = "UA";
 
         [System.Text.Json.Serialization.JsonPropertyName("ports")]
         public List<int> Ports { get; set; } = new List<int>();
