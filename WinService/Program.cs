@@ -984,8 +984,8 @@ class Program
             TrySendTelegramText(
                 chatId,
                 UiText(
-                    "Щоб визначити ваш IP з поточного підключення, відкрийте з телефона:\nhttps://api.ipify.org?format=json\n\nНадішліть сюди відповідь (IP або JSON), я сам підставлю IP.\nСкасування: /cancel",
-                    "To detect your IP from the current connection, open on your phone:\nhttps://api.ipify.org?format=json\n\nSend the response here (IP or JSON), I will extract and use the IP automatically.\nCancel: /cancel"),
+                    "Щоб визначити ваш IP з поточного підключення, відкрийте з телефона:\nhttps://api.ipify.org?format=json\n\nВажливо: після відкриття посилання Telegram не підставляє відповідь автоматично. Скопіюйте текст зі сторінки (IP або JSON) і надішліть сюди.\nСкасування: /cancel",
+                    "To detect your IP from the current connection, open on your phone:\nhttps://api.ipify.org?format=json\n\nImportant: after opening the link, Telegram does not insert the result automatically. Copy the page text (IP or JSON) and send it here.\nCancel: /cancel"),
                 BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
         }
 
@@ -1077,6 +1077,17 @@ class Program
                     string normalizedHereIp = ExtractFirstIpFromText(text);
                     if (string.IsNullOrWhiteSpace(normalizedHereIp) || !IPAddress.TryParse(normalizedHereIp, out IPAddress hereIp))
                     {
+                        if (text.IndexOf("api.ipify.org", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            TrySendTelegramText(
+                                chatId,
+                                UiText(
+                                    "Бачу лише посилання. Відкрийте його, скопіюйте результат зі сторінки (IP або JSON) і надішліть сюди текстом.\nСкасування: /cancel",
+                                    "I can see only the link. Open it, copy the page result (IP or JSON), and send that text here.\nCancel: /cancel"),
+                                BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
+                            return true;
+                        }
+
                         TrySendTelegramText(
                             chatId,
                             UiText(
