@@ -274,9 +274,12 @@ class Program
         private readonly Dictionary<string, DateTime> recentTcpProbeKeys = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, PendingTelegramCommand> pendingTelegramCommands = new Dictionary<string, PendingTelegramCommand>(StringComparer.Ordinal);
         private readonly HashSet<string> authorizedTelegramChats = new HashSet<string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> lastHereIpByChat = new Dictionary<string, string>(StringComparer.Ordinal);
+        private string lastHereIpGlobal = string.Empty;
         private readonly Dictionary<string, HereProbeTokenState> hereProbeTokens = new Dictionary<string, HereProbeTokenState>(StringComparer.Ordinal);
         private readonly object pendingTelegramCommandsLock = new object();
         private readonly object authorizedTelegramChatsLock = new object();
+        private readonly object hereIpMemoryLock = new object();
         private readonly object hereProbeTokensLock = new object();
         private static readonly TimeSpan TcpProbeWindow = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan TcpProbeDedupWindow = TimeSpan.FromSeconds(10);
@@ -828,6 +831,7 @@ class Program
                 }
 
                 string ip = parsedIp.ToString();
+                RememberHereIp(chatId, ip);
                 TrySendTelegramText(chatId, BuildIpStatusReply(ip));
 
                 lock (hereProbeTokensLock)
@@ -1197,6 +1201,17 @@ class Program
                 {
                     if (parts.Length < 2)
                     {
+                        if (TryGetRememberedHereIp(chatId, out string rememberedIp))
+                        {
+                            ClearPendingTelegramCommand(chatId);
+                            string unbanResult = UnblockIpFromTelegram(rememberedIp);
+                            TrySendTelegramText(
+                                chatId,
+                                UiText($"Підставлено IP з /here: {rememberedIp}\n{unbanResult}",
+                                       $"Used IP from /here: {rememberedIp}\n{unbanResult}"));
+                            return;
+                        }
+
                         SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.UnbanIp });
                         TrySendTelegramText(
                             chatId,
@@ -1240,8 +1255,7 @@ class Program
                        "/status all — list all active blocks"),
                 UiText("/status <ip> — детальний стан конкретного IP",
                        "/status <ip> — detailed info for a specific IP"),
-                UiText("/here — перевірити свій IP (із паролем)",
-                       "/here — check your IP status (with password)"),
+                  UiText("/here — перевірити свій IP", "/here — check your IP status"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
                        "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
                   UiText("/unban <ip> — зняти пряме блокування з IP",
@@ -1321,6 +1335,39 @@ class Program
             {
                 return pendingTelegramCommands.TryGetValue(chatId, out pendingCommand!);
             }
+        }
+
+        private void RememberHereIp(string chatId, string ip)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(ip))
+                return;
+
+            lock (hereIpMemoryLock)
+            {
+                lastHereIpByChat[chatId] = ip;
+                lastHereIpGlobal = ip;
+            }
+        }
+
+        private bool TryGetRememberedHereIp(string chatId, out string ip)
+        {
+            lock (hereIpMemoryLock)
+            {
+                if (!string.IsNullOrWhiteSpace(chatId) && lastHereIpByChat.TryGetValue(chatId, out string chatIp) && !string.IsNullOrWhiteSpace(chatIp))
+                {
+                    ip = chatIp;
+                    return true;
+                }
+
+                if (!string.IsNullOrWhiteSpace(lastHereIpGlobal))
+                {
+                    ip = lastHereIpGlobal;
+                    return true;
+                }
+            }
+
+            ip = string.Empty;
+            return false;
         }
 
         private bool IsTelegramChatAuthorized(string chatId)
@@ -1475,7 +1522,9 @@ class Program
                     }
 
                     ClearPendingTelegramCommand(chatId);
-                    TrySendTelegramText(chatId, BuildIpStatusReply(hereIp.ToString()));
+                        string detectedIp = hereIp.ToString();
+                        RememberHereIp(chatId, detectedIp);
+                        TrySendTelegramText(chatId, BuildIpStatusReply(detectedIp));
                     return true;
             }
 
