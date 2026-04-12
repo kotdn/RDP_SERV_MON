@@ -249,8 +249,7 @@ class Program
             BanIp,
             BanDuration,
             UnbanIp,
-            HereIp,
-            HerePassword
+            HereIp
         }
 
         private sealed class PendingTelegramCommand
@@ -265,7 +264,6 @@ class Program
             public DateTime CreatedUtc;
         }
 
-        private const string HerePassword = "13579QAZ";
         private const string StartAccessPassword = "Sin123";
         private static readonly TimeSpan HereProbeTokenTtl = TimeSpan.FromMinutes(10);
 
@@ -656,9 +654,9 @@ class Program
             {
                 keyboard = new[]
                 {
-                    new[] { "/start", "/help" },
+                    new[] { "/help" },
                     new[] { "/status", "/status all" },
-                    new[] { "/users", "/here" },
+                    new[] { "/here" },
                     new[] { "/ban", "/unban" }
                 },
                 resize_keyboard = true,
@@ -793,7 +791,7 @@ class Program
                 string token = context.Request.QueryString["t"] ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(token))
                 {
-                    WriteHereProbeResponse(context, 400, "Missing token. Return to Telegram and press 'Я здесь' again.");
+                    WriteHereProbeResponse(context, 400, "Немає токена. Поверніться в Telegram і натисніть /here ще раз.");
                     return;
                 }
 
@@ -803,7 +801,7 @@ class Program
                     CleanupExpiredHereProbeTokens();
                     if (!hereProbeTokens.TryGetValue(token, out HereProbeTokenState? tokenState))
                     {
-                        WriteHereProbeResponse(context, 404, "Token expired or invalid. Return to Telegram and press 'Я здесь' again.");
+                        WriteHereProbeResponse(context, 404, "Токен недійсний або прострочений. Поверніться в Telegram і натисніть /here ще раз.");
                         return;
                     }
 
@@ -812,47 +810,37 @@ class Program
 
                 if (IsLikelyPreviewRequest(context.Request.UserAgent))
                 {
-                    WriteHereProbeResponse(context, 200, "Link is valid. Open it directly from your phone browser to continue.");
+                    WriteHereProbeResponse(context, 200, "Посилання активне. Відкрийте його напряму в браузері телефона, щоб продовжити.");
                     return;
                 }
 
                 string remoteNormalized = ExtractClientIpFromProbeRequest(context.Request);
                 if (string.IsNullOrWhiteSpace(remoteNormalized) || !IPAddress.TryParse(remoteNormalized, out IPAddress parsedIp))
                 {
-                    WriteHereProbeResponse(context, 400, "Cannot determine your IP from this request.");
+                    WriteHereProbeResponse(context, 400, "Не вдалося визначити ваш IP із цього запиту.");
                     return;
                 }
 
                 if (IPAddress.IsLoopback(parsedIp) || IsPrivateIp(parsedIp))
                 {
-                    WriteHereProbeResponse(context, 400, "Could not determine a public IP. Disable link preview and open the link directly from your phone.");
+                    WriteHereProbeResponse(context, 400, "Не вдалося визначити публічний IP. Вимкніть preview посилань і відкрийте його напряму з телефона.");
                     return;
                 }
 
                 string ip = parsedIp.ToString();
-                SetPendingTelegramCommand(chatId, new PendingTelegramCommand
-                {
-                    Type = PendingTelegramCommandType.HerePassword,
-                    IpAddress = ip
-                });
-
-                TrySendTelegramText(
-                    chatId,
-                    UiText($"IP отримано автоматично: {ip}\nВведіть пароль для перевірки статусу IP.\nСкасування: /cancel",
-                           $"IP captured automatically: {ip}\nEnter password to check IP status.\nCancel: /cancel"),
-                    BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+                TrySendTelegramText(chatId, BuildIpStatusReply(ip));
 
                 lock (hereProbeTokensLock)
                 {
                     hereProbeTokens.Remove(token);
                 }
 
-                WriteHereProbeResponse(context, 200, "IP received. Return to Telegram and enter password.");
+                WriteHereProbeResponse(context, 200, "IP отримано. Поверніться в Telegram: статус уже надіслано.");
             }
             catch (Exception ex)
             {
                 WriteLog($"Here probe handler error: {ex.Message}");
-                try { WriteHereProbeResponse(context, 500, "Internal error. Return to Telegram and try again."); } catch { }
+                try { WriteHereProbeResponse(context, 500, "Внутрішня помилка. Поверніться в Telegram і спробуйте ще раз."); } catch { }
             }
         }
 
@@ -1176,12 +1164,6 @@ class Program
                     return;
                 }
 
-                if (command == "/users")
-                {
-                    TrySendTelegramText(chatId, BuildUsersReply());
-                    return;
-                }
-
                 if (command == "/ban")
                 {
                     if (parts.Length < 2)
@@ -1258,8 +1240,6 @@ class Program
                        "/status all — list all active blocks"),
                 UiText("/status <ip> — детальний стан конкретного IP",
                        "/status <ip> — detailed info for a specific IP"),
-                UiText("/users — список активних користувацьких сесій",
-                       "/users — list active user sessions"),
                 UiText("/here — перевірити свій IP (із паролем)",
                        "/here — check your IP status (with password)"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
@@ -1281,8 +1261,8 @@ class Program
                 TrySendTelegramText(
                     chatId,
                     UiText(
-                        $"Натисніть це посилання з телефона, щоб я сам визначив ваш IP:\n{autoLink}\n\nПісля відкриття поверніться в Telegram: я попрошу лише пароль.\nСкасування: /cancel",
-                        $"Open this link on your phone so I can capture your IP automatically:\n{autoLink}\n\nAfter opening, return to Telegram: I will ask only for password.\nCancel: /cancel"));
+                        $"Натисніть це посилання з телефона, щоб я сам визначив ваш IP:\n{autoLink}\n\nПісля відкриття я одразу надішлю статус IP в Telegram.\nСкасування: /cancel",
+                        $"Open this link on your phone so I can capture your IP automatically:\n{autoLink}\n\nAfter opening, I will send your IP status to Telegram immediately.\nCancel: /cancel"));
                 return;
             }
 
@@ -1494,37 +1474,8 @@ class Program
                         return true;
                     }
 
-                    SetPendingTelegramCommand(chatId, new PendingTelegramCommand
-                    {
-                        Type = PendingTelegramCommandType.HerePassword,
-                        IpAddress = hereIp.ToString()
-                    });
-
-                    TrySendTelegramText(
-                        chatId,
-                        UiText("Введіть пароль для перевірки статусу IP.\nСкасування: /cancel",
-                               "Enter password to check IP status.\nCancel: /cancel"),
-                        BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
-                    return true;
-
-                case PendingTelegramCommandType.HerePassword:
-                    if (!string.Equals(text.Trim(), HerePassword, StringComparison.Ordinal))
-                    {
-                        SetPendingTelegramCommand(chatId, new PendingTelegramCommand
-                        {
-                            Type = PendingTelegramCommandType.HerePassword,
-                            IpAddress = pendingCommand.IpAddress
-                        });
-                        TrySendTelegramText(
-                            chatId,
-                            UiText("Невірний пароль. Введіть пароль ще раз або /cancel.",
-                                   "Invalid password. Enter password again or /cancel."),
-                            BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
-                        return true;
-                    }
-
                     ClearPendingTelegramCommand(chatId);
-                    TrySendTelegramText(chatId, BuildIpStatusReply(pendingCommand.IpAddress));
+                    TrySendTelegramText(chatId, BuildIpStatusReply(hereIp.ToString()));
                     return true;
             }
 
