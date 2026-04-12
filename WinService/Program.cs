@@ -247,7 +247,9 @@ class Program
             None,
             BanIp,
             BanDuration,
-            UnbanIp
+            UnbanIp,
+            HereIp,
+            HerePassword
         }
 
         private sealed class PendingTelegramCommand
@@ -255,6 +257,8 @@ class Program
             public PendingTelegramCommandType Type;
             public string IpAddress = string.Empty;
         }
+
+        private const string HerePassword = "13579QAZ";
 
         private readonly Dictionary<string, BanState> bans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, BanState> subnetBans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
@@ -624,7 +628,8 @@ class Program
                 {
                     new[] { "/status", "/status all" },
                     new[] { "/users", "/help" },
-                    new[] { "/ban", "/unban" }
+                    new[] { "/ban", "/unban" },
+                    new[] { "Я здесь" }
                 },
                 resize_keyboard = true,
                 one_time_keyboard = false,
@@ -824,6 +829,14 @@ class Program
                 if (string.IsNullOrWhiteSpace(trimmed))
                     return;
 
+                if (string.Equals(trimmed, "Я здесь", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(trimmed, "I am here", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(trimmed, "/here", StringComparison.OrdinalIgnoreCase))
+                {
+                    StartHereFlow(chatId);
+                    return;
+                }
+
                 if (!trimmed.StartsWith("/", StringComparison.Ordinal) && TryHandlePendingTelegramInput(chatId, trimmed))
                     return;
 
@@ -951,6 +964,8 @@ class Program
                        "/status <ip> — detailed info for a specific IP"),
                 UiText("/users — список активних користувацьких сесій",
                        "/users — list active user sessions"),
+                  UiText("Я здесь / /here — перевірити свій IP (із паролем)",
+                      "I am here / /here — check your IP status (with password)"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
                        "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
                   UiText("/unban <ip> — зняти пряме блокування з IP",
@@ -961,6 +976,17 @@ class Program
                        "/? or /help — this help message"),
             };
             return string.Join("\n", lines);
+        }
+
+        private void StartHereFlow(string chatId)
+        {
+            SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.HereIp });
+            TrySendTelegramText(
+                chatId,
+                UiText(
+                    "Щоб визначити ваш IP з поточного підключення, відкрийте з телефона:\nhttps://api.ipify.org?format=json\n\nНадішліть сюди відповідь (IP або JSON), я сам підставлю IP.\nСкасування: /cancel",
+                    "To detect your IP from the current connection, open on your phone:\nhttps://api.ipify.org?format=json\n\nSend the response here (IP or JSON), I will extract and use the IP automatically.\nCancel: /cancel"),
+                BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
         }
 
         private void SetPendingTelegramCommand(string chatId, PendingTelegramCommand pendingCommand)
@@ -1046,9 +1072,71 @@ class Program
                     ClearPendingTelegramCommand(chatId);
                     TrySendTelegramText(chatId, UnblockIpFromTelegram(unbanIp.ToString()));
                     return true;
+
+                case PendingTelegramCommandType.HereIp:
+                    string normalizedHereIp = ExtractFirstIpFromText(text);
+                    if (string.IsNullOrWhiteSpace(normalizedHereIp) || !IPAddress.TryParse(normalizedHereIp, out IPAddress hereIp))
+                    {
+                        TrySendTelegramText(
+                            chatId,
+                            UiText(
+                                "Не бачу коректний IP. Надішліть IP або відповідь з https://api.ipify.org?format=json\nСкасування: /cancel",
+                                "I could not find a valid IP. Send an IP or response from https://api.ipify.org?format=json\nCancel: /cancel"),
+                            BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
+                        return true;
+                    }
+
+                    SetPendingTelegramCommand(chatId, new PendingTelegramCommand
+                    {
+                        Type = PendingTelegramCommandType.HerePassword,
+                        IpAddress = hereIp.ToString()
+                    });
+
+                    TrySendTelegramText(
+                        chatId,
+                        UiText("Введіть пароль для перевірки статусу IP.\nСкасування: /cancel",
+                               "Enter password to check IP status.\nCancel: /cancel"),
+                        BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+                    return true;
+
+                case PendingTelegramCommandType.HerePassword:
+                    if (!string.Equals(text.Trim(), HerePassword, StringComparison.Ordinal))
+                    {
+                        SetPendingTelegramCommand(chatId, new PendingTelegramCommand
+                        {
+                            Type = PendingTelegramCommandType.HerePassword,
+                            IpAddress = pendingCommand.IpAddress
+                        });
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("Невірний пароль. Введіть пароль ще раз або /cancel.",
+                                   "Invalid password. Enter password again or /cancel."),
+                            BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+                        return true;
+                    }
+
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, BuildIpStatusReply(pendingCommand.IpAddress));
+                    return true;
             }
 
             return false;
+        }
+
+        private string ExtractFirstIpFromText(string raw)
+        {
+            string direct = NormalizeIpCandidate(raw);
+            if (!string.IsNullOrWhiteSpace(direct))
+                return direct;
+
+            foreach (string token in SplitIpCandidates(raw))
+            {
+                string candidate = NormalizeIpCandidate(token);
+                if (!string.IsNullOrWhiteSpace(candidate))
+                    return candidate;
+            }
+
+            return string.Empty;
         }
 
         private string BuildUsersReply()
