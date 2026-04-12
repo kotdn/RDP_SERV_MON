@@ -1053,15 +1053,32 @@ class Program
                             ? chatIdElement.ToString()
                             : string.Empty;
 
-                        if (!string.Equals(incomingChatId, cfg.ChatId, StringComparison.Ordinal))
-                        {
-                            WriteLog($"Ignoring Telegram command from unauthorized chat: {incomingChatId}");
-                            continue;
-                        }
-
                         string text = messageElement.TryGetProperty("text", out JsonElement textElement)
                             ? textElement.GetString() ?? string.Empty
                             : string.Empty;
+
+                        if (!string.Equals(incomingChatId, cfg.ChatId, StringComparison.Ordinal))
+                        {
+                            bool canAttemptLogin = false;
+                            string trimmedIncoming = text.Trim();
+
+                            if (trimmedIncoming.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
+                            {
+                                canAttemptLogin = true;
+                            }
+                            else if (!trimmedIncoming.StartsWith("/", StringComparison.Ordinal)
+                                && TryGetPendingTelegramCommand(incomingChatId, out PendingTelegramCommand pending)
+                                && pending.Type == PendingTelegramCommandType.StartPassword)
+                            {
+                                canAttemptLogin = true;
+                            }
+
+                            if (!canAttemptLogin)
+                            {
+                                WriteLog($"Ignoring Telegram command from unauthorized chat: {incomingChatId}");
+                                continue;
+                            }
+                        }
 
                         if (!string.IsNullOrWhiteSpace(text))
                         {
@@ -1342,6 +1359,37 @@ class Program
             }
         }
 
+        private void PromoteTelegramControlChat(string chatId)
+        {
+            try
+            {
+                lock (configLock)
+                {
+                    ServiceConfig? cfg = null;
+                    if (File.Exists(configPath))
+                    {
+                        string json = File.ReadAllText(configPath);
+                        cfg = JsonSerializer.Deserialize<ServiceConfig>(json, ServiceConfigJson.Options);
+                    }
+
+                    cfg ??= ServiceConfig.CreateDefault();
+                    cfg.Telegram ??= new TelegramConfig { Enabled = false, BotToken = string.Empty, ChatId = string.Empty };
+
+                    if (!string.Equals(cfg.Telegram.ChatId, chatId, StringComparison.Ordinal))
+                    {
+                        cfg.Telegram.ChatId = chatId;
+                        File.WriteAllText(configPath, JsonSerializer.Serialize(cfg, ServiceConfigJson.Options));
+                        telegramConfig = cfg.Telegram;
+                        WriteLog($"Telegram control chat switched to: {chatId}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram control chat switch error: {ex.Message}");
+            }
+        }
+
         private bool TryHandlePendingTelegramInput(string chatId, string text)
         {
             if (!TryGetPendingTelegramCommand(chatId, out PendingTelegramCommand pendingCommand))
@@ -1362,6 +1410,7 @@ class Program
 
                     ClearPendingTelegramCommand(chatId);
                     AuthorizeTelegramChat(chatId);
+                    PromoteTelegramControlChat(chatId);
                     TrySendTelegramText(
                         chatId,
                         UiText("✅ Вхід виконано. Команди розблоковано.", "✅ Signed in. Commands are unlocked."),
