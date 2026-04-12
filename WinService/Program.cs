@@ -654,8 +654,7 @@ class Program
                 {
                     new[] { "/status", "/status all" },
                     new[] { "/users", "/help" },
-                    new[] { "/ban", "/unban" },
-                    new[] { "Я здесь" }
+                    new[] { "/ban", "/unban" }
                 },
                 resize_keyboard = true,
                 one_time_keyboard = false,
@@ -804,14 +803,24 @@ class Program
                     }
 
                     chatId = tokenState.ChatId;
-                    hereProbeTokens.Remove(token);
                 }
 
-                string remoteRaw = context.Request.RemoteEndPoint?.Address?.ToString() ?? string.Empty;
-                string remoteNormalized = NormalizeIpCandidate(remoteRaw);
+                if (IsLikelyPreviewRequest(context.Request.UserAgent))
+                {
+                    WriteHereProbeResponse(context, 200, "Link is valid. Open it directly from your phone browser to continue.");
+                    return;
+                }
+
+                string remoteNormalized = ExtractClientIpFromProbeRequest(context.Request);
                 if (string.IsNullOrWhiteSpace(remoteNormalized) || !IPAddress.TryParse(remoteNormalized, out IPAddress parsedIp))
                 {
                     WriteHereProbeResponse(context, 400, "Cannot determine your IP from this request.");
+                    return;
+                }
+
+                if (IPAddress.IsLoopback(parsedIp) || IsPrivateIp(parsedIp))
+                {
+                    WriteHereProbeResponse(context, 400, "Could not determine a public IP. Disable link preview and open the link directly from your phone.");
                     return;
                 }
 
@@ -827,6 +836,11 @@ class Program
                     UiText($"IP отримано автоматично: {ip}\nВведіть пароль для перевірки статусу IP.\nСкасування: /cancel",
                            $"IP captured automatically: {ip}\nEnter password to check IP status.\nCancel: /cancel"),
                     BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+
+                lock (hereProbeTokensLock)
+                {
+                    hereProbeTokens.Remove(token);
+                }
 
                 WriteHereProbeResponse(context, 200, "IP received. Return to Telegram and enter password.");
             }
@@ -850,6 +864,76 @@ class Program
             {
                 output.Write(buffer, 0, buffer.Length);
             }
+        }
+
+        private string ExtractClientIpFromProbeRequest(HttpListenerRequest request)
+        {
+            string[] headerCandidates =
+            {
+                "CF-Connecting-IP",
+                "True-Client-IP",
+                "X-Real-IP",
+                "X-Forwarded-For"
+            };
+
+            for (int i = 0; i < headerCandidates.Length; i++)
+            {
+                string headerValue = request.Headers[headerCandidates[i]] ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(headerValue))
+                    continue;
+
+                string[] parts = headerValue.Split(',');
+                for (int j = 0; j < parts.Length; j++)
+                {
+                    string candidate = NormalizeIpCandidate(parts[j]);
+                    if (!string.IsNullOrWhiteSpace(candidate))
+                        return candidate;
+                }
+            }
+
+            string remoteRaw = request.RemoteEndPoint?.Address?.ToString() ?? string.Empty;
+            return NormalizeIpCandidate(remoteRaw);
+        }
+
+        private bool IsLikelyPreviewRequest(string? userAgent)
+        {
+            if (string.IsNullOrWhiteSpace(userAgent))
+                return false;
+
+            string ua = userAgent.Trim();
+            return ua.IndexOf("TelegramBot", StringComparison.OrdinalIgnoreCase) >= 0
+                || ua.IndexOf("bot", StringComparison.OrdinalIgnoreCase) >= 0
+                || ua.IndexOf("crawler", StringComparison.OrdinalIgnoreCase) >= 0
+                || ua.IndexOf("spider", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool IsPrivateIp(IPAddress ip)
+        {
+            if (ip.AddressFamily == AddressFamily.InterNetwork)
+            {
+                byte[] b = ip.GetAddressBytes();
+                if (b[0] == 10)
+                    return true;
+                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+                    return true;
+                if (b[0] == 192 && b[1] == 168)
+                    return true;
+                if (b[0] == 169 && b[1] == 254)
+                    return true;
+                return false;
+            }
+
+            if (ip.AddressFamily == AddressFamily.InterNetworkV6)
+            {
+                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal)
+                    return true;
+
+                byte[] b = ip.GetAddressBytes();
+                // fc00::/7 (unique local addresses)
+                return (b[0] & 0xFE) == 0xFC;
+            }
+
+            return false;
         }
 
         private void CleanupExpiredHereProbeTokens()
@@ -995,8 +1079,7 @@ class Program
                 if (string.IsNullOrWhiteSpace(trimmed))
                     return;
 
-                if (string.Equals(trimmed, "Я здесь", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(trimmed, "I am here", StringComparison.OrdinalIgnoreCase)
+                if (string.Equals(trimmed, "I am here", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(trimmed, "/here", StringComparison.OrdinalIgnoreCase))
                 {
                     StartHereFlow(chatId);
@@ -1130,8 +1213,8 @@ class Program
                        "/status <ip> — detailed info for a specific IP"),
                 UiText("/users — список активних користувацьких сесій",
                        "/users — list active user sessions"),
-                  UiText("Я здесь / /here — перевірити свій IP (із паролем)",
-                      "I am here / /here — check your IP status (with password)"),
+                UiText("/here — перевірити свій IP (із паролем)",
+                       "/here — check your IP status (with password)"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
                        "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
                   UiText("/unban <ip> — зняти пряме блокування з IP",
