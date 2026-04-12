@@ -245,6 +245,7 @@ class Program
         private enum PendingTelegramCommandType
         {
             None,
+            StartPassword,
             BanIp,
             BanDuration,
             UnbanIp,
@@ -265,6 +266,7 @@ class Program
         }
 
         private const string HerePassword = "13579QAZ";
+        private const string StartAccessPassword = "Sin123";
         private static readonly TimeSpan HereProbeTokenTtl = TimeSpan.FromMinutes(10);
 
         private readonly Dictionary<string, BanState> bans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
@@ -273,8 +275,10 @@ class Program
         private readonly Dictionary<string, List<DateTime>> tcpProbeHits = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, DateTime> recentTcpProbeKeys = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, PendingTelegramCommand> pendingTelegramCommands = new Dictionary<string, PendingTelegramCommand>(StringComparer.Ordinal);
+        private readonly HashSet<string> authorizedTelegramChats = new HashSet<string>(StringComparer.Ordinal);
         private readonly Dictionary<string, HereProbeTokenState> hereProbeTokens = new Dictionary<string, HereProbeTokenState>(StringComparer.Ordinal);
         private readonly object pendingTelegramCommandsLock = new object();
+        private readonly object authorizedTelegramChatsLock = new object();
         private readonly object hereProbeTokensLock = new object();
         private static readonly TimeSpan TcpProbeWindow = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan TcpProbeDedupWindow = TimeSpan.FromSeconds(10);
@@ -652,8 +656,9 @@ class Program
             {
                 keyboard = new[]
                 {
+                    new[] { "/start", "/help" },
                     new[] { "/status", "/status all" },
-                    new[] { "/users", "/help" },
+                    new[] { "/users", "/here" },
                     new[] { "/ban", "/unban" }
                 },
                 resize_keyboard = true,
@@ -1079,13 +1084,6 @@ class Program
                 if (string.IsNullOrWhiteSpace(trimmed))
                     return;
 
-                if (string.Equals(trimmed, "I am here", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(trimmed, "/here", StringComparison.OrdinalIgnoreCase))
-                {
-                    StartHereFlow(chatId);
-                    return;
-                }
-
                 if (!trimmed.StartsWith("/", StringComparison.Ordinal) && TryHandlePendingTelegramInput(chatId, trimmed))
                     return;
 
@@ -1099,6 +1097,37 @@ class Program
                     command = command.Substring(0, atIndex);
 
                 command = command.ToLowerInvariant();
+
+                if (command == "/start")
+                {
+                    SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.StartPassword });
+                    TrySendTelegramText(
+                        chatId,
+                        UiText("🔐 Введіть пароль доступу для входу.", "🔐 Enter access password to sign in."),
+                        BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+                    return;
+                }
+
+                if (!IsTelegramChatAuthorized(chatId))
+                {
+                    if (command == "/cancel")
+                    {
+                        ClearPendingTelegramCommand(chatId);
+                        TrySendTelegramText(chatId, UiText("Дію скасовано. Для входу виконайте /start", "Action cancelled. Run /start to sign in."));
+                        return;
+                    }
+
+                    TrySendTelegramText(chatId, UiText("🔒 Доступ закрито. Спочатку виконайте /start і введіть пароль.", "🔒 Access is locked. Run /start and enter the password first."));
+                    return;
+                }
+
+                if (string.Equals(trimmed, "I am here", StringComparison.OrdinalIgnoreCase)
+                    || command == "/here")
+                {
+                    StartHereFlow(chatId);
+                    return;
+                }
+
                 if (command == "/cancel")
                 {
                     ClearPendingTelegramCommand(chatId);
@@ -1205,6 +1234,7 @@ class Program
             {
                 UiText("📋 Доступні команди:", "📋 Available commands:"),
                 "",
+                UiText("/start — вхід за паролем", "/start — sign in with password"),
                 UiText("/status — стан системи (служба, процеси)",
                        "/status — system state (service, processes)"),
                 UiText("/status all — список усіх активних блокувань",
@@ -1296,6 +1326,22 @@ class Program
             }
         }
 
+        private bool IsTelegramChatAuthorized(string chatId)
+        {
+            lock (authorizedTelegramChatsLock)
+            {
+                return authorizedTelegramChats.Contains(chatId);
+            }
+        }
+
+        private void AuthorizeTelegramChat(string chatId)
+        {
+            lock (authorizedTelegramChatsLock)
+            {
+                authorizedTelegramChats.Add(chatId);
+            }
+        }
+
         private bool TryHandlePendingTelegramInput(string chatId, string text)
         {
             if (!TryGetPendingTelegramCommand(chatId, out PendingTelegramCommand pendingCommand))
@@ -1303,6 +1349,25 @@ class Program
 
             switch (pendingCommand.Type)
             {
+                case PendingTelegramCommandType.StartPassword:
+                    if (!string.Equals(text.Trim(), StartAccessPassword, StringComparison.Ordinal))
+                    {
+                        SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.StartPassword });
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("Невірний пароль. Спробуйте ще раз або /cancel.", "Invalid password. Try again or /cancel."),
+                            BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+                        return true;
+                    }
+
+                    ClearPendingTelegramCommand(chatId);
+                    AuthorizeTelegramChat(chatId);
+                    TrySendTelegramText(
+                        chatId,
+                        UiText("✅ Вхід виконано. Команди розблоковано.", "✅ Signed in. Commands are unlocked."),
+                        BuildCommandKeyboardJson());
+                    return true;
+
                 case PendingTelegramCommandType.BanIp:
                     if (!IPAddress.TryParse(text, out IPAddress parsedIp))
                     {
