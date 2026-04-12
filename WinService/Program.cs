@@ -272,6 +272,7 @@ class Program
         private readonly Dictionary<string, SprayState> sprayByUser = new Dictionary<string, SprayState>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<DateTime>> tcpProbeHits = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, DateTime> recentTcpProbeKeys = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, DateTime> recentRdpPortActivityByIp = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, PendingTelegramCommand> pendingTelegramCommands = new Dictionary<string, PendingTelegramCommand>(StringComparer.Ordinal);
         private readonly HashSet<string> authorizedTelegramChats = new HashSet<string>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> lastHereIpByChat = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -281,8 +282,10 @@ class Program
         private readonly object authorizedTelegramChatsLock = new object();
         private readonly object hereIpMemoryLock = new object();
         private readonly object hereProbeTokensLock = new object();
+        private readonly object tcpProbeStateLock = new object();
         private static readonly TimeSpan TcpProbeWindow = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan TcpProbeDedupWindow = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan FailedLogonPortCorrelationWindow = TimeSpan.FromMinutes(5);
         private const int TCP_PROBE_THRESHOLD = 3;
         private HttpListener? hereProbeListener;
         private Thread? hereProbeThread;
@@ -499,6 +502,12 @@ class Program
                 }
 
                 DateTime eventTimeLocal = (record.TimeCreated ?? DateTime.UtcNow).ToLocalTime();
+                if (!HasRecentRdpPortActivity(sourceIP, DateTime.Now))
+                {
+                    WriteLog($"4625 ignored (not correlated with configured RDP port {rdpPort}): ip={sourceIP}");
+                    return;
+                }
+
                 ProcessFailedLogonEvent(sourceIP, ExtractTargetUserFromEventRecord(record), eventTimeLocal);
             }
             catch (Exception ex)
@@ -2085,7 +2094,10 @@ class Program
         {
             try
             {
-                CleanupTcpProbeState(nowLocal);
+                lock (tcpProbeStateLock)
+                {
+                    CleanupTcpProbeState(nowLocal);
+                }
 
                 var connections = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections();
                 foreach (var connection in connections)
@@ -2103,11 +2115,21 @@ class Program
                     if (string.IsNullOrWhiteSpace(remoteIp) || IsIPWhitelisted(remoteIp))
                         continue;
 
-                    string probeKey = $"{remoteIp}|{connection.RemoteEndPoint.Port}|{connection.State}";
-                    if (recentTcpProbeKeys.TryGetValue(probeKey, out DateTime seenUntil) && seenUntil > nowLocal)
+                    bool skip = false;
+                    lock (tcpProbeStateLock)
+                    {
+                        recentRdpPortActivityByIp[remoteIp] = nowLocal;
+
+                        string probeKey = $"{remoteIp}|{connection.RemoteEndPoint.Port}|{connection.State}";
+                        if (recentTcpProbeKeys.TryGetValue(probeKey, out DateTime seenUntil) && seenUntil > nowLocal)
+                            skip = true;
+                        else
+                            recentTcpProbeKeys[probeKey] = nowLocal.Add(TcpProbeDedupWindow);
+                    }
+
+                    if (skip)
                         continue;
 
-                    recentTcpProbeKeys[probeKey] = nowLocal.Add(TcpProbeDedupWindow);
                     RegisterTcpProbe(remoteIp, connection.RemoteEndPoint.Port, connection.State, nowLocal);
                 }
             }
@@ -2119,17 +2141,21 @@ class Program
 
         private void RegisterTcpProbe(string remoteIp, int remotePort, TcpState state, DateTime nowLocal)
         {
-            if (!tcpProbeHits.TryGetValue(remoteIp, out List<DateTime>? hits))
+            int probeCount;
+            lock (tcpProbeStateLock)
             {
-                hits = new List<DateTime>();
-                tcpProbeHits[remoteIp] = hits;
+                if (!tcpProbeHits.TryGetValue(remoteIp, out List<DateTime>? hits))
+                {
+                    hits = new List<DateTime>();
+                    tcpProbeHits[remoteIp] = hits;
+                }
+
+                DateTime cutoff = nowLocal - TcpProbeWindow;
+                hits.RemoveAll(ts => ts < cutoff);
+                hits.Add(nowLocal);
+                probeCount = hits.Count;
             }
 
-            DateTime cutoff = nowLocal - TcpProbeWindow;
-            hits.RemoveAll(ts => ts < cutoff);
-            hits.Add(nowLocal);
-
-            int probeCount = hits.Count;
             WriteLog($"TCP probe: ip={remoteIp}, remote_port={remotePort}, state={state}, count={probeCount}/{TCP_PROBE_THRESHOLD}, window={TcpProbeWindow.TotalSeconds:0}s");
 
             if (probeCount < TCP_PROBE_THRESHOLD)
@@ -2165,6 +2191,29 @@ class Program
 
             for (int i = 0; i < staleKeys.Count; i++)
                 recentTcpProbeKeys.Remove(staleKeys[i]);
+
+            DateTime portCutoff = nowLocal - FailedLogonPortCorrelationWindow;
+            var staleActivityIps = recentRdpPortActivityByIp
+                .Where(kvp => kvp.Value < portCutoff)
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            for (int i = 0; i < staleActivityIps.Count; i++)
+                recentRdpPortActivityByIp.Remove(staleActivityIps[i]);
+        }
+
+        private bool HasRecentRdpPortActivity(string sourceIp, DateTime nowLocal)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIp))
+                return false;
+
+            lock (tcpProbeStateLock)
+            {
+                if (!recentRdpPortActivityByIp.TryGetValue(sourceIp, out DateTime lastSeen))
+                    return false;
+
+                return (nowLocal - lastSeen) <= FailedLogonPortCorrelationWindow;
+            }
         }
 
         private void LogBruteThresholdHit(string sourceIp, int attempts, BlockLevel level)
@@ -3259,7 +3308,7 @@ class Program
                         var setPsi = new ProcessStartInfo
                         {
                             FileName = "netsh.exe",
-                            Arguments = $"advfirewall firewall set rule name=\"RDP_BLOCK_ALL\" new enable=yes profile=any dir=in action=block remoteip=\"{remoteIpList}\"",
+                            Arguments = $"advfirewall firewall set rule name=\"RDP_BLOCK_ALL\" new enable=yes profile=any dir=in action=block protocol=any localport=any remoteip=\"{remoteIpList}\"",
                             UseShellExecute = false,
                             CreateNoWindow = true,
                             RedirectStandardOutput = true,
@@ -3290,7 +3339,7 @@ class Program
                     var addPsi = new ProcessStartInfo
                     {
                         FileName = "netsh.exe",
-                        Arguments = $"advfirewall firewall add rule name=\"RDP_BLOCK_ALL\" dir=in action=block remoteip=\"{remoteIpList}\" profile=any enable=yes",
+                        Arguments = $"advfirewall firewall add rule name=\"RDP_BLOCK_ALL\" dir=in action=block protocol=any localport=any remoteip=\"{remoteIpList}\" profile=any enable=yes",
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         RedirectStandardOutput = true,
