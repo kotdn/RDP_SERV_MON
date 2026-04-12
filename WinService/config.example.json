@@ -14,6 +14,14 @@
       "blockMinutes": 2880
     }
   ],
+  "telegram": {
+    "enabled": false,
+    "botToken": "",
+    "chatId": "",
+    "hereProbeEnabled": false,
+    "hereProbePublicUrl": "https://your-domain.example/here",
+    "hereProbeListenPrefix": "http://+:18088/"
+  },
   "antiBrute": {
     "enabled": true,
     "spray": {

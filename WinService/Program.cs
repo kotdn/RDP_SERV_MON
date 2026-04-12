@@ -258,7 +258,14 @@ class Program
             public string IpAddress = string.Empty;
         }
 
+        private sealed class HereProbeTokenState
+        {
+            public string ChatId = string.Empty;
+            public DateTime CreatedUtc;
+        }
+
         private const string HerePassword = "13579QAZ";
+        private static readonly TimeSpan HereProbeTokenTtl = TimeSpan.FromMinutes(10);
 
         private readonly Dictionary<string, BanState> bans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, BanState> subnetBans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
@@ -266,10 +273,14 @@ class Program
         private readonly Dictionary<string, List<DateTime>> tcpProbeHits = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, DateTime> recentTcpProbeKeys = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, PendingTelegramCommand> pendingTelegramCommands = new Dictionary<string, PendingTelegramCommand>(StringComparer.Ordinal);
+        private readonly Dictionary<string, HereProbeTokenState> hereProbeTokens = new Dictionary<string, HereProbeTokenState>(StringComparer.Ordinal);
         private readonly object pendingTelegramCommandsLock = new object();
+        private readonly object hereProbeTokensLock = new object();
         private static readonly TimeSpan TcpProbeWindow = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan TcpProbeDedupWindow = TimeSpan.FromSeconds(10);
         private const int TCP_PROBE_THRESHOLD = 3;
+        private HttpListener? hereProbeListener;
+        private Thread? hereProbeThread;
 
         public RDPSecurityService()
         {
@@ -312,6 +323,7 @@ class Program
             monitorThread.Start();
 
             StartTelegramCommandWatcher();
+            StartHereProbeWatcher();
 
             // Watch for changes in whitelist and blocklist to update firewall rule
             try
@@ -361,6 +373,20 @@ class Program
             {
                 if (telegramCommandThread != null && telegramCommandThread.IsAlive)
                     telegramCommandThread.Join(5000);
+            }
+            catch { }
+
+            try
+            {
+                if (hereProbeListener != null && hereProbeListener.IsListening)
+                    hereProbeListener.Stop();
+            }
+            catch { }
+
+            try
+            {
+                if (hereProbeThread != null && hereProbeThread.IsAlive)
+                    hereProbeThread.Join(5000);
             }
             catch { }
 
@@ -698,6 +724,146 @@ class Program
             }
         }
 
+        private void StartHereProbeWatcher()
+        {
+            try
+            {
+                var cfg = telegramConfig;
+                if (cfg == null || !cfg.HereProbeEnabled)
+                    return;
+
+                if (string.IsNullOrWhiteSpace(cfg.HereProbeListenPrefix))
+                {
+                    WriteLog("Here probe listener disabled: empty hereProbeListenPrefix in config.");
+                    return;
+                }
+
+                hereProbeListener = new HttpListener();
+                string prefix = cfg.HereProbeListenPrefix.Trim();
+                if (!prefix.EndsWith("/", StringComparison.Ordinal))
+                    prefix += "/";
+
+                hereProbeListener.Prefixes.Add(prefix);
+                hereProbeListener.Start();
+
+                hereProbeThread = new Thread(MonitorHereProbeRequests);
+                hereProbeThread.IsBackground = true;
+                hereProbeThread.Start();
+
+                WriteLog($"Here probe listener started on {prefix}");
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Here probe listener start error: {ex.Message}");
+            }
+        }
+
+        private void MonitorHereProbeRequests()
+        {
+            while (isRunning)
+            {
+                try
+                {
+                    if (hereProbeListener == null || !hereProbeListener.IsListening)
+                        return;
+
+                    HttpListenerContext context = hereProbeListener.GetContext();
+                    HandleHereProbeRequest(context);
+                }
+                catch (HttpListenerException)
+                {
+                    if (!isRunning)
+                        return;
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Here probe request error: {ex.Message}");
+                }
+            }
+        }
+
+        private void HandleHereProbeRequest(HttpListenerContext context)
+        {
+            try
+            {
+                string token = context.Request.QueryString["t"] ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    WriteHereProbeResponse(context, 400, "Missing token. Return to Telegram and press 'Я здесь' again.");
+                    return;
+                }
+
+                string chatId;
+                lock (hereProbeTokensLock)
+                {
+                    CleanupExpiredHereProbeTokens();
+                    if (!hereProbeTokens.TryGetValue(token, out HereProbeTokenState? tokenState))
+                    {
+                        WriteHereProbeResponse(context, 404, "Token expired or invalid. Return to Telegram and press 'Я здесь' again.");
+                        return;
+                    }
+
+                    chatId = tokenState.ChatId;
+                    hereProbeTokens.Remove(token);
+                }
+
+                string remoteRaw = context.Request.RemoteEndPoint?.Address?.ToString() ?? string.Empty;
+                string remoteNormalized = NormalizeIpCandidate(remoteRaw);
+                if (string.IsNullOrWhiteSpace(remoteNormalized) || !IPAddress.TryParse(remoteNormalized, out IPAddress parsedIp))
+                {
+                    WriteHereProbeResponse(context, 400, "Cannot determine your IP from this request.");
+                    return;
+                }
+
+                string ip = parsedIp.ToString();
+                SetPendingTelegramCommand(chatId, new PendingTelegramCommand
+                {
+                    Type = PendingTelegramCommandType.HerePassword,
+                    IpAddress = ip
+                });
+
+                TrySendTelegramText(
+                    chatId,
+                    UiText($"IP отримано автоматично: {ip}\nВведіть пароль для перевірки статусу IP.\nСкасування: /cancel",
+                           $"IP captured automatically: {ip}\nEnter password to check IP status.\nCancel: /cancel"),
+                    BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+
+                WriteHereProbeResponse(context, 200, "IP received. Return to Telegram and enter password.");
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Here probe handler error: {ex.Message}");
+                try { WriteHereProbeResponse(context, 500, "Internal error. Return to Telegram and try again."); } catch { }
+            }
+        }
+
+        private void WriteHereProbeResponse(HttpListenerContext context, int statusCode, string message)
+        {
+            context.Response.StatusCode = statusCode;
+            context.Response.ContentType = "text/html; charset=utf-8";
+
+            string safe = WebUtility.HtmlEncode(message);
+            string html = "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>RDP Security</title></head><body style=\"font-family:Segoe UI,Arial,sans-serif;padding:20px;\"><h3>RDP Security Service</h3><p>" + safe + "</p></body></html>";
+            byte[] buffer = Encoding.UTF8.GetBytes(html);
+            context.Response.ContentLength64 = buffer.Length;
+            using (Stream output = context.Response.OutputStream)
+            {
+                output.Write(buffer, 0, buffer.Length);
+            }
+        }
+
+        private void CleanupExpiredHereProbeTokens()
+        {
+            DateTime nowUtc = DateTime.UtcNow;
+            var expired = hereProbeTokens
+                .Where(kv => (nowUtc - kv.Value.CreatedUtc) > HereProbeTokenTtl)
+                .Select(kv => kv.Key)
+                .ToList();
+
+            for (int i = 0; i < expired.Count; i++)
+                hereProbeTokens.Remove(expired[i]);
+        }
+
         private void PollTelegramCommands()
         {
             var cfg = telegramConfig;
@@ -980,6 +1146,16 @@ class Program
 
         private void StartHereFlow(string chatId)
         {
+            if (TryBuildHereProbeLink(chatId, out string autoLink))
+            {
+                TrySendTelegramText(
+                    chatId,
+                    UiText(
+                        $"Натисніть це посилання з телефона, щоб я сам визначив ваш IP:\n{autoLink}\n\nПісля відкриття поверніться в Telegram: я попрошу лише пароль.\nСкасування: /cancel",
+                        $"Open this link on your phone so I can capture your IP automatically:\n{autoLink}\n\nAfter opening, return to Telegram: I will ask only for password.\nCancel: /cancel"));
+                return;
+            }
+
             SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.HereIp });
             TrySendTelegramText(
                 chatId,
@@ -987,6 +1163,30 @@ class Program
                     "Щоб визначити ваш IP з поточного підключення, відкрийте з телефона:\nhttps://api.ipify.org?format=json\n\nВажливо: після відкриття посилання Telegram не підставляє відповідь автоматично. Скопіюйте текст зі сторінки (IP або JSON) і надішліть сюди.\nСкасування: /cancel",
                     "To detect your IP from the current connection, open on your phone:\nhttps://api.ipify.org?format=json\n\nImportant: after opening the link, Telegram does not insert the result automatically. Copy the page text (IP or JSON) and send it here.\nCancel: /cancel"),
                 BuildForceReplyJson(UiText("Наприклад: 1.2.3.4", "Example: 1.2.3.4")));
+        }
+
+        private bool TryBuildHereProbeLink(string chatId, out string link)
+        {
+            link = string.Empty;
+
+            var cfg = telegramConfig;
+            if (cfg == null || !cfg.HereProbeEnabled || string.IsNullOrWhiteSpace(cfg.HereProbePublicUrl))
+                return false;
+
+            string token = Guid.NewGuid().ToString("N");
+            lock (hereProbeTokensLock)
+            {
+                CleanupExpiredHereProbeTokens();
+                hereProbeTokens[token] = new HereProbeTokenState
+                {
+                    ChatId = chatId,
+                    CreatedUtc = DateTime.UtcNow
+                };
+            }
+
+            string separator = cfg.HereProbePublicUrl.Contains("?", StringComparison.Ordinal) ? "&" : "?";
+            link = cfg.HereProbePublicUrl + separator + "t=" + Uri.EscapeDataString(token);
+            return true;
         }
 
         private void SetPendingTelegramCommand(string chatId, PendingTelegramCommand pendingCommand)
@@ -3445,6 +3645,15 @@ class Program
 
         [JsonPropertyName("chatId")]
         public string ChatId { get; set; } = "";
+
+        [JsonPropertyName("hereProbeEnabled")]
+        public bool HereProbeEnabled { get; set; } = false;
+
+        [JsonPropertyName("hereProbePublicUrl")]
+        public string HereProbePublicUrl { get; set; } = "";
+
+        [JsonPropertyName("hereProbeListenPrefix")]
+        public string HereProbeListenPrefix { get; set; } = "http://+:18088/";
 
         [JsonPropertyName("messageTemplates")]
         public Dictionary<string, string> MessageTemplates { get; set; } = new Dictionary<string, string>();
