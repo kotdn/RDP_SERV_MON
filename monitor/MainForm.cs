@@ -15,6 +15,7 @@ using System.Management.Automation;
 using System.Runtime.InteropServices;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.IO.Compression;
 
 namespace RDPMonitor
 {
@@ -22,6 +23,7 @@ namespace RDPMonitor
     {
         private const string SERVICE_NAME = "RDPSecurityService";
         private const string LOG_DIR = @"C:\ProgramData\RDPSecurityService";
+        private const string SUPPORT_EMAIL = "deni.samoylenko.ds@gmail.com";
         
         // Top panels
         private Panel pnlTopContainer;
@@ -48,6 +50,7 @@ namespace RDPMonitor
         // Tab: Banned IPs  
         private ListBox lstBannedIPs;
         private Button btnUnblockIP;
+        private Button btnClearAllBlocks;
         private TextBox txtIPToUnblock;
         
         // Tab: White List
@@ -77,6 +80,8 @@ namespace RDPMonitor
         private TextBox txtSprayWindowMinutes;
         private TextBox txtSprayUniqueIpsThreshold;
         private TextBox txtSprayBlockMinutes;
+        private TextBox txtIpAbuseWindowMinutes;
+        private TextBox txtIpAbuseDistinctUsersThreshold;
         private CheckBox chkRecurrenceEnabled;
         private TextBox txtRecurrenceLookbackHours;
         private TextBox txtRecurrenceStepMultiplier;
@@ -102,6 +107,7 @@ namespace RDPMonitor
         private CheckBox chkNotifyServiceStop;
         private CheckBox chkNotifyConfigSave;
         private Button btnSaveMessageSettings;
+        private Button btnPrepareSupportReport;
         
         // Timers and watchers
         private System.Windows.Forms.Timer refreshTimer;
@@ -527,6 +533,20 @@ namespace RDPMonitor
             btnUnblockIP.FlatAppearance.BorderSize = 0;
             btnUnblockIP.Click += BtnUnblockIP_Click;
             pnl.Controls.Add(btnUnblockIP);
+
+            btnClearAllBlocks = new Button
+            {
+                Text = "🧹 Очистить все блокировки",
+                Location = new Point(390, 410),
+                Size = new Size(220, 25),
+                BackColor = Color.FromArgb(198, 40, 40),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            btnClearAllBlocks.FlatAppearance.BorderSize = 0;
+            btnClearAllBlocks.Click += BtnClearAllBlocks_Click;
+            pnl.Controls.Add(btnClearAllBlocks);
 
             tab.Controls.Add(pnl);
         }
@@ -965,11 +985,52 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtSprayBlockMinutes);
 
+            var lblIpAbuse = new Label
+            {
+                Text = Lang.Get("ANTI_BRUTE_IP_ABUSE"),
+                AutoSize = true,
+                Location = new Point(440, 242),
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            pnl.Controls.Add(lblIpAbuse);
+
+            var lblIpAbuseWindow = new Label
+            {
+                Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN") + " (NAT: M=10)",
+                AutoSize = true,
+                Location = new Point(440, 268)
+            };
+            pnl.Controls.Add(lblIpAbuseWindow);
+
+            txtIpAbuseWindowMinutes = new TextBox
+            {
+                Location = new Point(690, 264),
+                Size = new Size(90, 24),
+                Text = "10"
+            };
+            pnl.Controls.Add(txtIpAbuseWindowMinutes);
+
+            var lblIpAbuseUsers = new Label
+            {
+                Text = Lang.Get("ANTI_BRUTE_UNIQUE_USERS") + " (NAT: N=3)",
+                AutoSize = true,
+                Location = new Point(440, 296)
+            };
+            pnl.Controls.Add(lblIpAbuseUsers);
+
+            txtIpAbuseDistinctUsersThreshold = new TextBox
+            {
+                Location = new Point(690, 292),
+                Size = new Size(90, 24),
+                Text = "3"
+            };
+            pnl.Controls.Add(txtIpAbuseDistinctUsersThreshold);
+
             var lblRecurrence = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_RECURRENCE"),
                 AutoSize = true,
-                Location = new Point(440, 246),
+                Location = new Point(440, 328),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
             pnl.Controls.Add(lblRecurrence);
@@ -978,7 +1039,7 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_ENABLED_SHORT"),
                 AutoSize = true,
-                Location = new Point(440, 268)
+                Location = new Point(440, 350)
             };
             pnl.Controls.Add(chkRecurrenceEnabled);
 
@@ -986,13 +1047,13 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_LOOKBACK_H"),
                 AutoSize = true,
-                Location = new Point(440, 294)
+                Location = new Point(440, 376)
             };
             pnl.Controls.Add(lblRecurrenceLookback);
 
             txtRecurrenceLookbackHours = new TextBox
             {
-                Location = new Point(690, 290),
+                Location = new Point(690, 372),
                 Size = new Size(90, 24),
                 Text = "24"
             };
@@ -1002,13 +1063,13 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_STEP"),
                 AutoSize = true,
-                Location = new Point(440, 322)
+                Location = new Point(440, 404)
             };
             pnl.Controls.Add(lblRecurrenceStep);
 
             txtRecurrenceStepMultiplier = new TextBox
             {
-                Location = new Point(690, 318),
+                Location = new Point(690, 400),
                 Size = new Size(90, 24),
                 Text = "0.5"
             };
@@ -1018,13 +1079,13 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_MAX"),
                 AutoSize = true,
-                Location = new Point(440, 350)
+                Location = new Point(440, 432)
             };
             pnl.Controls.Add(lblRecurrenceMax);
 
             txtRecurrenceMaxMultiplier = new TextBox
             {
-                Location = new Point(690, 346),
+                Location = new Point(690, 428),
                 Size = new Size(90, 24),
                 Text = "4.0"
             };
@@ -1034,7 +1095,7 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_SUBNET"),
                 AutoSize = true,
-                Location = new Point(440, 382),
+                Location = new Point(440, 464),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
             pnl.Controls.Add(lblSubnet);
@@ -1043,7 +1104,7 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_ENABLED_SHORT"),
                 AutoSize = true,
-                Location = new Point(440, 404)
+                Location = new Point(440, 486)
             };
             pnl.Controls.Add(chkSubnetEnabled);
 
@@ -1051,13 +1112,13 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN"),
                 AutoSize = true,
-                Location = new Point(440, 430)
+                Location = new Point(440, 512)
             };
             pnl.Controls.Add(lblSubnetWindow);
 
             txtSubnetWindowMinutes = new TextBox
             {
-                Location = new Point(690, 426),
+                Location = new Point(690, 508),
                 Size = new Size(90, 24),
                 Text = "30"
             };
@@ -1067,13 +1128,13 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_UNIQUE_IPS"),
                 AutoSize = true,
-                Location = new Point(440, 458)
+                Location = new Point(440, 540)
             };
             pnl.Controls.Add(lblSubnetThreshold);
 
             txtSubnetUniqueIpsThreshold = new TextBox
             {
-                Location = new Point(690, 454),
+                Location = new Point(690, 536),
                 Size = new Size(90, 24),
                 Text = "3"
             };
@@ -1083,13 +1144,13 @@ namespace RDPMonitor
             {
                 Text = Lang.Get("ANTI_BRUTE_BLOCK_MIN"),
                 AutoSize = true,
-                Location = new Point(440, 486)
+                Location = new Point(440, 568)
             };
             pnl.Controls.Add(lblSubnetBlock);
 
             txtSubnetBlockMinutes = new TextBox
             {
-                Location = new Point(690, 482),
+                Location = new Point(690, 564),
                 Size = new Size(90, 24),
                 Text = "240"
             };
@@ -1098,7 +1159,7 @@ namespace RDPMonitor
             btnSaveConfig = new Button
             {
                 Text = "💾 " + Lang.Get("BTN_SAVE_CONFIGURATION"),
-                Location = new Point(10, 540),
+                Location = new Point(10, 622),
                 Size = new Size(900, 42),
                 BackColor = Color.FromArgb(33, 150, 243),
                 ForeColor = Color.White,
@@ -2019,6 +2080,21 @@ namespace RDPMonitor
             btnSaveMessageSettings.Click += BtnSaveMessageSettings_Click;
             pnl.Controls.Add(btnSaveMessageSettings);
 
+            btnPrepareSupportReport = new Button
+            {
+                Location = new Point(230, yPos),
+                Size = new Size(340, 35),
+                Text = GetSupportReportButtonText(),
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                BackColor = Color.FromArgb(0, 153, 102),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            btnPrepareSupportReport.FlatAppearance.BorderSize = 0;
+            btnPrepareSupportReport.Click += BtnPrepareSupportReport_Click;
+            pnl.Controls.Add(btnPrepareSupportReport);
+
             tab.Controls.Add(pnl);
 
             // Load initial settings
@@ -2055,6 +2131,276 @@ namespace RDPMonitor
             }
         }
 
+        private string GetSupportReportButtonText()
+        {
+            bool isUa = string.Equals(Program.CurrentLanguage, "UA", StringComparison.OrdinalIgnoreCase);
+            return isUa ? "Підготувати звіт для email" : "Prepare email support report";
+        }
+
+        private void BtnPrepareSupportReport_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string reportId;
+                string mailSubject;
+                string mailBody;
+                string zipPath = BuildSupportReportPackage(out reportId, out mailSubject, out mailBody);
+
+                try { Clipboard.SetText(mailBody); } catch { }
+                TryOpenMailClient(mailSubject, mailBody);
+                TryRevealFileInExplorer(zipPath);
+
+                bool isUa = string.Equals(Program.CurrentLanguage, "UA", StringComparison.OrdinalIgnoreCase);
+                string text = isUa
+                    ? $"Звіт сформовано: {zipPath}\n\nЛист відкрито на {SUPPORT_EMAIL}.\nТекст листа скопійовано в буфер.\n\nБудь ласка, додайте ZIP у вкладення."
+                    : $"Report created: {zipPath}\n\nMail draft opened for {SUPPORT_EMAIL}.\nMail text copied to clipboard.\n\nPlease attach the ZIP file.";
+                MessageBox.Show(text, isUa ? "Готово" : "Done", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                AppendLog($"[MONITOR] Support report prepared: id={reportId}, zip={zipPath}");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                AppendLog($"[ERROR] Support report generation failed: {ex.Message}");
+            }
+        }
+
+        private string BuildSupportReportPackage(out string reportId, out string mailSubject, out string mailBody)
+        {
+            string reportsRoot = Path.Combine(LOG_DIR, "support-reports");
+            Directory.CreateDirectory(reportsRoot);
+
+            reportId = $"{DateTime.Now:yyyyMMdd-HHmmss}-{Environment.MachineName}";
+            string reportDir = Path.Combine(reportsRoot, $"report-{reportId}");
+            Directory.CreateDirectory(reportDir);
+
+            var report = CollectSupportStats(reportId);
+            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+
+            string jsonPath = Path.Combine(reportDir, "support-report.json");
+            File.WriteAllText(jsonPath, JsonSerializer.Serialize(report, jsonOptions), Encoding.UTF8);
+
+            string txtPath = Path.Combine(reportDir, "support-report.txt");
+            File.WriteAllText(txtPath, BuildSupportReportText(report), Encoding.UTF8);
+
+            TryCopyIfExists(Path.Combine(LOG_DIR, "config.json"), reportDir);
+            TryCopyIfExists(Path.Combine(LOG_DIR, "service.log"), reportDir);
+            TryCopyIfExists(Path.Combine(LOG_DIR, "access.log"), reportDir);
+            TryCopyIfExists(Path.Combine(LOG_DIR, "block_list.log"), reportDir);
+            TryCopyIfExists(Path.Combine(LOG_DIR, "whiteList.log"), reportDir);
+            TryCopyIfExists(Path.Combine(LOG_DIR, "monitor-notifications.json"), reportDir);
+
+            string zipPath = Path.Combine(reportsRoot, $"rdp-security-stats-{reportId}.zip");
+            if (File.Exists(zipPath))
+                File.Delete(zipPath);
+
+            ZipFile.CreateFromDirectory(reportDir, zipPath, CompressionLevel.Optimal, includeBaseDirectory: false);
+
+            mailSubject = $"RDP Security Stats [{Environment.MachineName}] {DateTime.Now:yyyy-MM-dd HH:mm}";
+            mailBody =
+                $"Hello,\n\n" +
+                $"Please find attached diagnostics ZIP generated by Monitor.\n" +
+                $"Report ID: {reportId}\n\n" +
+                $"How to read:\n" +
+                $"- support-report.txt: human summary\n" +
+                $"- support-report.json: machine-readable fields for quick parsing\n\n" +
+                $"ZIP path on sender host: {zipPath}\n\n" +
+                $"Regards.";
+
+            string draftPath = Path.Combine(reportDir, "email-draft.txt");
+            File.WriteAllText(draftPath, $"To: {SUPPORT_EMAIL}\nSubject: {mailSubject}\n\n{mailBody}", Encoding.UTF8);
+
+            return zipPath;
+        }
+
+        private SupportStatsReport CollectSupportStats(string reportId)
+        {
+            string accessPath = Path.Combine(LOG_DIR, "access.log");
+            string blockPath = Path.Combine(LOG_DIR, "block_list.log");
+            string whitePath = Path.Combine(LOG_DIR, "whiteList.log");
+            string configPath = Path.Combine(LOG_DIR, "config.json");
+
+            int accessTotal = 0;
+            int accessLast24h = 0;
+            if (File.Exists(accessPath))
+            {
+                foreach (string raw in File.ReadLines(accessPath, Encoding.UTF8))
+                {
+                    if (string.IsNullOrWhiteSpace(raw))
+                        continue;
+
+                    accessTotal++;
+                    if (TryParseBracketTimestamp(raw, out DateTime ts) && ts >= DateTime.Now.AddHours(-24))
+                        accessLast24h++;
+                }
+            }
+
+            var activeTargets = ReadBlockedTargetsFromBlockListLog().ToList();
+            int activeDirectIps = activeTargets.Count(x => !x.Contains("/", StringComparison.Ordinal));
+            int activeSubnets = activeTargets.Count(x => x.Contains("/", StringComparison.Ordinal));
+            int firewallTargetCount = ReadBlockedTargetsFromFirewallRule().Count();
+
+            int whitelistCount = 0;
+            if (File.Exists(whitePath))
+            {
+                foreach (string line in File.ReadLines(whitePath, Encoding.UTF8))
+                {
+                    string value = line.Trim();
+                    if (!string.IsNullOrWhiteSpace(value) && !value.StartsWith("#", StringComparison.Ordinal))
+                        whitelistCount++;
+                }
+            }
+
+            var topTargets = BuildTopBlockedTargets(blockPath, 10);
+
+            string serviceState = "Unknown";
+            try
+            {
+                using var sc = new ServiceController(SERVICE_NAME);
+                serviceState = sc.Status.ToString();
+            }
+            catch (Exception ex)
+            {
+                serviceState = $"Error: {ex.Message}";
+            }
+
+            string appVersion = FileVersionInfo.GetVersionInfo(Application.ExecutablePath).FileVersion ?? "unknown";
+
+            return new SupportStatsReport
+            {
+                ReportId = reportId,
+                GeneratedLocal = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                MachineName = Environment.MachineName,
+                UserName = Environment.UserName,
+                OsVersion = Environment.OSVersion.ToString(),
+                MonitorVersion = appVersion,
+                ServiceStatus = serviceState,
+                AccessAttemptsTotal = accessTotal,
+                AccessAttemptsLast24h = accessLast24h,
+                ActiveBlockedTargets = activeTargets.Count,
+                ActiveBlockedDirectIps = activeDirectIps,
+                ActiveBlockedSubnets = activeSubnets,
+                FirewallRemoteTargetCount = firewallTargetCount,
+                WhitelistEntries = whitelistCount,
+                TopBlockedTargets = topTargets,
+                Notes = "Attach this report ZIP to email for support investigation."
+            };
+        }
+
+        private static List<SupportTopBlockedTarget> BuildTopBlockedTargets(string blockPath, int top)
+        {
+            var stats = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (!File.Exists(blockPath))
+                return new List<SupportTopBlockedTarget>();
+
+            foreach (string raw in File.ReadLines(blockPath, Encoding.UTF8))
+            {
+                string target = ExtractBlockedTarget(raw);
+                if (string.IsNullOrWhiteSpace(target))
+                    continue;
+
+                if (!stats.ContainsKey(target))
+                    stats[target] = 0;
+                stats[target]++;
+            }
+
+            return stats
+                .OrderByDescending(k => k.Value)
+                .ThenBy(k => k.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(Math.Max(1, top))
+                .Select(k => new SupportTopBlockedTarget { Target = k.Key, Hits = k.Value })
+                .ToList();
+        }
+
+        private static bool TryParseBracketTimestamp(string line, out DateTime timestamp)
+        {
+            timestamp = default;
+            if (string.IsNullOrWhiteSpace(line) || line.Length < 21 || line[0] != '[')
+                return false;
+
+            int end = line.IndexOf(']');
+            if (end <= 1)
+                return false;
+
+            string rawTs = line.Substring(1, end - 1).Trim();
+            return DateTime.TryParseExact(
+                rawTs,
+                "yyyy-MM-dd HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal,
+                out timestamp);
+        }
+
+        private static void TryCopyIfExists(string sourcePath, string destinationDirectory)
+        {
+            if (!File.Exists(sourcePath))
+                return;
+
+            string destinationPath = Path.Combine(destinationDirectory, Path.GetFileName(sourcePath));
+            File.Copy(sourcePath, destinationPath, overwrite: true);
+        }
+
+        private static void TryRevealFileInExplorer(string filePath)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{filePath}\"",
+                    UseShellExecute = true
+                });
+            }
+            catch { }
+        }
+
+        private static void TryOpenMailClient(string subject, string body)
+        {
+            try
+            {
+                string mailto = $"mailto:{SUPPORT_EMAIL}?subject={Uri.EscapeDataString(subject)}&body={Uri.EscapeDataString(body)}";
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = mailto,
+                    UseShellExecute = true
+                });
+            }
+            catch { }
+        }
+
+        private static string BuildSupportReportText(SupportStatsReport report)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("RDP Security Monitor Support Report");
+            sb.AppendLine($"Report ID: {report.ReportId}");
+            sb.AppendLine($"Generated: {report.GeneratedLocal}");
+            sb.AppendLine($"Machine: {report.MachineName}");
+            sb.AppendLine($"User: {report.UserName}");
+            sb.AppendLine($"OS: {report.OsVersion}");
+            sb.AppendLine($"Monitor version: {report.MonitorVersion}");
+            sb.AppendLine($"Service status: {report.ServiceStatus}");
+            sb.AppendLine();
+            sb.AppendLine("Statistics:");
+            sb.AppendLine($"- Access attempts total: {report.AccessAttemptsTotal}");
+            sb.AppendLine($"- Access attempts last 24h: {report.AccessAttemptsLast24h}");
+            sb.AppendLine($"- Active blocked targets: {report.ActiveBlockedTargets}");
+            sb.AppendLine($"- Active blocked direct IPs: {report.ActiveBlockedDirectIps}");
+            sb.AppendLine($"- Active blocked subnets: {report.ActiveBlockedSubnets}");
+            sb.AppendLine($"- Firewall remote target count: {report.FirewallRemoteTargetCount}");
+            sb.AppendLine($"- Whitelist entries: {report.WhitelistEntries}");
+            sb.AppendLine();
+            sb.AppendLine("Top blocked targets:");
+            foreach (var item in report.TopBlockedTargets)
+                sb.AppendLine($"- {item.Target}: {item.Hits}");
+
+            sb.AppendLine();
+            sb.AppendLine("How to read:");
+            sb.AppendLine("- support-report.txt: quick human summary");
+            sb.AppendLine("- support-report.json: machine-readable structured stats");
+            sb.AppendLine("- service.log/access.log/block_list.log: source evidence");
+            return sb.ToString();
+        }
+
         private void LoadMessageNotificationSettings()
         {
             try
@@ -2082,10 +2428,55 @@ namespace RDPMonitor
             }
         }
 
+        private MessageNotificationSettings? GetCurrentNotificationSettingsSnapshot()
+        {
+            try
+            {
+                if (IsHandleCreated && InvokeRequired)
+                    return (MessageNotificationSettings?)Invoke(new Func<MessageNotificationSettings?>(GetCurrentNotificationSettingsSnapshot));
+
+                if (chkNotifyMonitorStart == null ||
+                    chkNotifyMonitorClose == null ||
+                    chkNotifyServiceStart == null ||
+                    chkNotifyServiceStop == null ||
+                    chkNotifyConfigSave == null)
+                {
+                    return null;
+                }
+
+                return new MessageNotificationSettings
+                {
+                    MonitorStart = chkNotifyMonitorStart.Checked,
+                    MonitorClose = chkNotifyMonitorClose.Checked,
+                    ServiceStart = chkNotifyServiceStart.Checked,
+                    ServiceStop = chkNotifyServiceStop.Checked,
+                    ConfigSave = chkNotifyConfigSave.Checked
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private bool ShouldNotify(string eventType)
         {
             try
             {
+                var currentSettings = GetCurrentNotificationSettingsSnapshot();
+                if (currentSettings != null)
+                {
+                    return eventType switch
+                    {
+                        "MonitorStart" => currentSettings.MonitorStart,
+                        "MonitorClose" => currentSettings.MonitorClose,
+                        "ServiceStart" => currentSettings.ServiceStart,
+                        "ServiceStop" => currentSettings.ServiceStop,
+                        "ConfigSave" => currentSettings.ConfigSave,
+                        _ => false
+                    };
+                }
+
                 string settingsPath = Path.Combine(LOG_DIR, "monitor-notifications.json");
                 if (!File.Exists(settingsPath))
                     return false; // Default: don't send
@@ -3077,6 +3468,8 @@ namespace RDPMonitor
             
             if (btnSaveMessageSettings != null)
                 btnSaveMessageSettings.Text = Lang.Get("MSG_SETTINGS_SAVE_BTN");
+            if (btnPrepareSupportReport != null)
+                btnPrepareSupportReport.Text = GetSupportReportButtonText();
             if (chkNotifyMonitorStart != null)
                 chkNotifyMonitorStart.Text = Lang.Get("MSG_SETTINGS_MONITOR_START");
             if (chkNotifyMonitorClose != null)
@@ -3298,7 +3691,15 @@ namespace RDPMonitor
 
             try
             {
-                RemoveBlockedTargetFromBlockLog(ip);
+                var removedTargets = RemoveBlockedEntriesForIp(ip);
+                foreach (var target in removedTargets)
+                {
+                    RemoveBlockedTargetFromFirewallRule(target);
+                    if (TryConvertSubnet24ToRange(target, out string subnetRange))
+                        RemoveBlockedTargetFromFirewallRule(subnetRange);
+                }
+
+                // Keep backward compatibility for older firewall entries that may contain only direct IP.
                 RemoveBlockedTargetFromFirewallRule(ip);
 
                 LoadBannedIPs();
@@ -3311,6 +3712,139 @@ namespace RDPMonitor
             {
                 MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 AppendLog($"[ERROR] Unlock failed: {ex.Message}");
+            }
+        }
+
+        private void BtnClearAllBlocks_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                bool isUa = string.Equals(Program.CurrentLanguage, "UA", StringComparison.OrdinalIgnoreCase);
+                string requiredPhrase = "ТОЧНО УДАЛИТЬ";
+
+                var preConfirm = MessageBox.Show(
+                    isUa
+                        ? "Будуть видалені всі блокування з журналу та з правила RDP_BLOCK_ALL. Продовжити?"
+                        : "All blocks will be removed from log and from RDP_BLOCK_ALL firewall rule. Continue?",
+                    isUa ? "Підтвердження" : "Confirmation",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+
+                if (preConfirm != DialogResult.Yes)
+                    return;
+
+                if (!TryConfirmWithPhrase(requiredPhrase, isUa))
+                    return;
+
+                string blockLogPath = Path.Combine(LOG_DIR, "block_list.log");
+                if (File.Exists(blockLogPath))
+                    File.WriteAllText(blockLogPath, string.Empty, Encoding.UTF8);
+                else
+                    File.WriteAllText(blockLogPath, string.Empty, Encoding.UTF8);
+
+                RemoveAllBlocksFirewallRule();
+
+                LoadBannedIPs();
+                AppendLog("[MONITOR] All blocks have been cleared manually");
+                SendSimpleTelegramMessage("🧹 ОЧИЩЕНО ВСЕ БЛОКИРОВКИ");
+                MessageBox.Show(
+                    isUa ? "Усі блокування очищено." : "All blocks were cleared.",
+                    isUa ? "Готово" : "Done",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                AppendLog($"[ERROR] Clear all blocks failed: {ex.Message}");
+            }
+        }
+
+        private bool TryConfirmWithPhrase(string requiredPhrase, bool isUa)
+        {
+            using (var prompt = new Form())
+            {
+                prompt.Text = isUa ? "Фінальне підтвердження" : "Final Confirmation";
+                prompt.StartPosition = FormStartPosition.CenterParent;
+                prompt.FormBorderStyle = FormBorderStyle.FixedDialog;
+                prompt.MinimizeBox = false;
+                prompt.MaximizeBox = false;
+                prompt.ClientSize = new Size(540, 170);
+
+                var lbl = new Label
+                {
+                    AutoSize = false,
+                    Location = new Point(12, 12),
+                    Size = new Size(516, 60),
+                    Text = (isUa
+                        ? "Щоб підтвердити повне очищення, введіть точну фразу: "
+                        : "To confirm full cleanup, enter exact phrase: ") + requiredPhrase,
+                    Font = new Font("Segoe UI", 9, FontStyle.Bold)
+                };
+
+                var txt = new TextBox
+                {
+                    Location = new Point(12, 82),
+                    Size = new Size(516, 24),
+                    Font = new Font("Segoe UI", 9)
+                };
+
+                var btnOk = new Button
+                {
+                    Text = isUa ? "Підтвердити" : "Confirm",
+                    Location = new Point(350, 122),
+                    Size = new Size(85, 30),
+                    DialogResult = DialogResult.OK
+                };
+
+                var btnCancel = new Button
+                {
+                    Text = isUa ? "Скасувати" : "Cancel",
+                    Location = new Point(443, 122),
+                    Size = new Size(85, 30),
+                    DialogResult = DialogResult.Cancel
+                };
+
+                prompt.Controls.Add(lbl);
+                prompt.Controls.Add(txt);
+                prompt.Controls.Add(btnOk);
+                prompt.Controls.Add(btnCancel);
+                prompt.AcceptButton = btnOk;
+                prompt.CancelButton = btnCancel;
+
+                if (prompt.ShowDialog(this) != DialogResult.OK)
+                    return false;
+
+                if (!string.Equals((txt.Text ?? string.Empty).Trim(), requiredPhrase, StringComparison.Ordinal))
+                {
+                    MessageBox.Show(
+                        isUa ? "Фраза введена невірно. Операцію скасовано." : "Phrase is incorrect. Operation cancelled.",
+                        isUa ? "Скасовано" : "Cancelled",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return false;
+                }
+
+                return true;
+            }
+        }
+
+        private void RemoveAllBlocksFirewallRule()
+        {
+            using (var ps = PowerShell.Create())
+            {
+                ps.AddScript(@"
+                    $rule = Get-NetFirewallRule -Name 'RDP_BLOCK_ALL' -ErrorAction SilentlyContinue
+                    if (-not $rule) {
+                        New-NetFirewallRule -Name 'RDP_BLOCK_ALL' -DisplayName 'RDP Block All' -Direction Inbound -Action Block -Protocol Any -RemoteAddress '255.255.255.255' -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
+                        return
+                    }
+
+                    Get-NetFirewallRule -Name 'RDP_BLOCK_ALL' |
+                        Get-NetFirewallAddressFilter |
+                        Set-NetFirewallAddressFilter -RemoteAddress '255.255.255.255' -ErrorAction SilentlyContinue | Out-Null
+                ");
+                ps.Invoke();
             }
         }
 
@@ -3330,8 +3864,17 @@ namespace RDPMonitor
                 File.AppendAllText(whitelistPath, entry + Environment.NewLine, Encoding.UTF8);
 
                 LoadWhiteList();
-                RemoveBlockedTargetFromBlockLog(ip);
+                var removedTargets = RemoveBlockedEntriesForIp(ip);
+                foreach (var target in removedTargets)
+                {
+                    RemoveBlockedTargetFromFirewallRule(target);
+                    if (TryConvertSubnet24ToRange(target, out string subnetRange))
+                        RemoveBlockedTargetFromFirewallRule(subnetRange);
+                }
+
+                // Keep backward compatibility for older firewall entries that may contain only direct IP.
                 RemoveBlockedTargetFromFirewallRule(ip);
+
                 LoadBannedIPs();
                 txtNewWhiteIP.Clear();
                 AppendLog($"[MONITOR] IP {ip} added to whitelist and removed from active blocks");
@@ -3356,6 +3899,93 @@ namespace RDPMonitor
             File.WriteAllLines(blockLogPath, lines, Encoding.UTF8);
         }
 
+        private List<string> RemoveBlockedEntriesForIp(string ip)
+        {
+            var removedTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string blockLogPath = Path.Combine(LOG_DIR, "block_list.log");
+            if (!File.Exists(blockLogPath) || string.IsNullOrWhiteSpace(ip))
+                return removedTargets.ToList();
+
+            var keptLines = new List<string>();
+            foreach (var line in File.ReadAllLines(blockLogPath, Encoding.UTF8))
+            {
+                string target = ExtractBlockedTarget(line);
+                if (string.IsNullOrWhiteSpace(target))
+                {
+                    keptLines.Add(line);
+                    continue;
+                }
+
+                bool removeDirect = string.Equals(target, ip, StringComparison.OrdinalIgnoreCase);
+                if (removeDirect)
+                {
+                    removedTargets.Add(target);
+                    continue;
+                }
+
+                keptLines.Add(line);
+            }
+
+            File.WriteAllLines(blockLogPath, keptLines, Encoding.UTF8);
+            return removedTargets.ToList();
+        }
+
+        private static string ExtractBlockedTarget(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return string.Empty;
+
+            string trimmed = line.Trim();
+            int ipIdx = trimmed.IndexOf("BLOCKED IP:", StringComparison.OrdinalIgnoreCase);
+            if (ipIdx >= 0)
+                return trimmed.Substring(ipIdx + 11).Split('|')[0].Trim();
+
+            int netIdx = trimmed.IndexOf("BLOCKED NET:", StringComparison.OrdinalIgnoreCase);
+            if (netIdx >= 0)
+                return trimmed.Substring(netIdx + 12).Split('|')[0].Trim();
+
+            return string.Empty;
+        }
+
+        private static bool IsIpv4InSubnet24(string ipAddress, string subnetCidr)
+        {
+            if (!System.Net.IPAddress.TryParse(ipAddress, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                return false;
+
+            if (!TryParseSubnet24(subnetCidr, out byte[]? netBytes) || netBytes == null)
+                return false;
+
+            byte[] bytes = ip.GetAddressBytes();
+            return bytes[0] == netBytes[0] && bytes[1] == netBytes[1] && bytes[2] == netBytes[2];
+        }
+
+        private static bool TryParseSubnet24(string subnetCidr, out byte[]? netBytes)
+        {
+            netBytes = null;
+            if (string.IsNullOrWhiteSpace(subnetCidr))
+                return false;
+
+            string[] parts = subnetCidr.Trim().Split('/');
+            if (parts.Length != 2 || parts[1] != "24")
+                return false;
+
+            if (!System.Net.IPAddress.TryParse(parts[0], out var netIp) || netIp.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                return false;
+
+            netBytes = netIp.GetAddressBytes();
+            return true;
+        }
+
+        private static bool TryConvertSubnet24ToRange(string target, out string range)
+        {
+            range = string.Empty;
+            if (!TryParseSubnet24(target, out byte[]? netBytes) || netBytes == null)
+                return false;
+
+            range = $"{netBytes[0]}.{netBytes[1]}.{netBytes[2]}.0-{netBytes[0]}.{netBytes[1]}.{netBytes[2]}.255";
+            return true;
+        }
+
         private void RemoveBlockedTargetFromFirewallRule(string target)
         {
             using (var ps = PowerShell.Create())
@@ -3371,7 +4001,9 @@ namespace RDPMonitor
                     $new = $current | Where-Object {{ $_ -ne '{target}' }}
 
                     if ($new.Count -eq 0) {{
-                        Remove-NetFirewallRule -Name 'RDP_BLOCK_ALL' -ErrorAction SilentlyContinue | Out-Null
+                        Get-NetFirewallRule -Name 'RDP_BLOCK_ALL' |
+                            Get-NetFirewallAddressFilter |
+                            Set-NetFirewallAddressFilter -RemoteAddress '255.255.255.255' -ErrorAction SilentlyContinue | Out-Null
                     }}
                     else {{
                         Get-NetFirewallRule -Name 'RDP_BLOCK_ALL' |
@@ -3642,6 +4274,7 @@ namespace RDPMonitor
 
                     var anti = config.AntiBrute ?? AntiBruteConfig.CreateDefault();
                     var spray = anti.Spray ?? SprayConfig.CreateDefault();
+                    var ipAbuse = anti.IpAbuse ?? IpAbuseConfig.CreateDefault();
                     var recurrence = anti.Recurrence ?? RecurrenceConfig.CreateDefault();
                     var subnet = anti.Subnet ?? SubnetConfig.CreateDefault();
 
@@ -3651,6 +4284,9 @@ namespace RDPMonitor
                     txtSprayWindowMinutes.Text = Math.Max(1, spray.WindowMinutes).ToString();
                     txtSprayUniqueIpsThreshold.Text = Math.Max(2, spray.UniqueIpsThreshold).ToString();
                     txtSprayBlockMinutes.Text = Math.Max(1, spray.BlockMinutes).ToString();
+
+                    txtIpAbuseWindowMinutes.Text = Math.Max(1, ipAbuse.WindowMinutes).ToString();
+                    txtIpAbuseDistinctUsersThreshold.Text = Math.Max(2, ipAbuse.DistinctUsersThreshold).ToString();
 
                     chkRecurrenceEnabled.Checked = recurrence.Enabled;
                     txtRecurrenceLookbackHours.Text = Math.Max(1, recurrence.LookbackHours).ToString();
@@ -3814,6 +4450,9 @@ namespace RDPMonitor
                 if (!TryParseDurationBox(txtSprayBlockMinutes, sprayLabel, out int sprayBlockMinutes, out string sprayConversion)) return;
                 if (!string.IsNullOrWhiteSpace(sprayConversion)) durationConversions.Add(sprayConversion);
 
+                if (!TryParseIntBox(txtIpAbuseWindowMinutes, "IP abuse windowMinutes", 1, out int ipAbuseWindowMinutes)) return;
+                if (!TryParseIntBox(txtIpAbuseDistinctUsersThreshold, "IP abuse distinctUsersThreshold", 2, out int ipAbuseDistinctUsersThreshold)) return;
+
                 if (!TryParseIntBox(txtRecurrenceLookbackHours, "Recurrence lookbackHours", 1, out int recurrenceLookbackHours)) return;
                 if (!TryParseDoubleBox(txtRecurrenceStepMultiplier, "Recurrence stepMultiplier", 0.0, out double recurrenceStepMultiplier)) return;
                 if (!TryParseDoubleBox(txtRecurrenceMaxMultiplier, "Recurrence maxMultiplier", 1.0, out double recurrenceMaxMultiplier)) return;
@@ -3851,6 +4490,11 @@ namespace RDPMonitor
                         UniqueIpsThreshold = sprayUniqueIpsThreshold,
                         BlockMinutes = sprayBlockMinutes
                     },
+                    IpAbuse = new IpAbuseConfig
+                    {
+                        WindowMinutes = ipAbuseWindowMinutes,
+                        DistinctUsersThreshold = ipAbuseDistinctUsersThreshold
+                    },
                     Recurrence = new RecurrenceConfig
                     {
                         Enabled = chkRecurrenceEnabled.Checked,
@@ -3880,6 +4524,12 @@ namespace RDPMonitor
                 AppendLog("[MONITOR] Configuration saved successfully");
 
                 string languageLabel = isUa ? "Українська (UA)" : "English (EN)";
+                WriteMonitorEventLog("[MONITOR_UI] ConfigSave event triggered from settings tab");
+                string configSavedMessage = isUa
+                    ? $"⚙️ Конфігурацію збережено в Monitor\nПорт: {port}\nМова: {languageLabel}"
+                    : $"⚙️ Configuration saved in Monitor\nPort: {port}\nLanguage: {languageLabel}";
+                NotifyMonitorLifecycle("ConfigSave", configSavedMessage, fireAndForget: true);
+
                 var successMessage = new StringBuilder();
 
                 if (isUa)
@@ -3981,6 +4631,9 @@ namespace RDPMonitor
         [System.Text.Json.Serialization.JsonPropertyName("subnet")]
         public SubnetConfig? Subnet { get; set; } = SubnetConfig.CreateDefault();
 
+        [System.Text.Json.Serialization.JsonPropertyName("ipAbuse")]
+        public IpAbuseConfig? IpAbuse { get; set; } = IpAbuseConfig.CreateDefault();
+
         public static AntiBruteConfig CreateDefault()
         {
             return new AntiBruteConfig
@@ -3988,7 +4641,26 @@ namespace RDPMonitor
                 Enabled = true,
                 Spray = SprayConfig.CreateDefault(),
                 Recurrence = RecurrenceConfig.CreateDefault(),
-                Subnet = SubnetConfig.CreateDefault()
+                Subnet = SubnetConfig.CreateDefault(),
+                IpAbuse = IpAbuseConfig.CreateDefault()
+            };
+        }
+    }
+
+    public class IpAbuseConfig
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("windowMinutes")]
+        public int WindowMinutes { get; set; } = 10;
+
+        [System.Text.Json.Serialization.JsonPropertyName("distinctUsersThreshold")]
+        public int DistinctUsersThreshold { get; set; } = 3;
+
+        public static IpAbuseConfig CreateDefault()
+        {
+            return new IpAbuseConfig
+            {
+                WindowMinutes = 10,
+                DistinctUsersThreshold = 3
             };
         }
     }
@@ -4111,6 +4783,66 @@ namespace RDPMonitor
 
         [System.Text.Json.Serialization.JsonPropertyName("configSave")]
         public bool ConfigSave { get; set; } = false;
+    }
+
+    public class SupportStatsReport
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("reportId")]
+        public string ReportId { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("generatedLocal")]
+        public string GeneratedLocal { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("machineName")]
+        public string MachineName { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("userName")]
+        public string UserName { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("osVersion")]
+        public string OsVersion { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("monitorVersion")]
+        public string MonitorVersion { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("serviceStatus")]
+        public string ServiceStatus { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("accessAttemptsTotal")]
+        public int AccessAttemptsTotal { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("accessAttemptsLast24h")]
+        public int AccessAttemptsLast24h { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("activeBlockedTargets")]
+        public int ActiveBlockedTargets { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("activeBlockedDirectIps")]
+        public int ActiveBlockedDirectIps { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("activeBlockedSubnets")]
+        public int ActiveBlockedSubnets { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("firewallRemoteTargetCount")]
+        public int FirewallRemoteTargetCount { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("whitelistEntries")]
+        public int WhitelistEntries { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("topBlockedTargets")]
+        public List<SupportTopBlockedTarget> TopBlockedTargets { get; set; } = new List<SupportTopBlockedTarget>();
+
+        [System.Text.Json.Serialization.JsonPropertyName("notes")]
+        public string Notes { get; set; } = string.Empty;
+    }
+
+    public class SupportTopBlockedTarget
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("target")]
+        public string Target { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("hits")]
+        public int Hits { get; set; }
     }
 
     // Custom transparent PictureBox for background

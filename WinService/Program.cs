@@ -75,7 +75,10 @@ class Program
 
                     process.WaitForExit();
                     if (process.ExitCode == 0)
+                    {
+                        InitializeWhitelistAndFirewallOnInstall();
                         Console.WriteLine("Service installed successfully");
+                    }
                     else
                         Console.WriteLine($"Failed to install service (exit code: {process.ExitCode})");
                 }
@@ -84,6 +87,184 @@ class Program
             {
                 Console.WriteLine($"Error: {ex.Message}");
             }
+        }
+
+        static void InitializeWhitelistAndFirewallOnInstall()
+        {
+            string logDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "RDPSecurityService");
+            string whitelistPath = Path.Combine(logDirectory, "whiteList.log");
+            string blockListPath = Path.Combine(logDirectory, "block_list.log");
+            string configPath = Path.Combine(logDirectory, "config.json");
+
+            // Reinstall safety: if service state already exists, do not bootstrap/overwrite anything.
+            if (File.Exists(whitelistPath) || File.Exists(blockListPath) || File.Exists(configPath))
+            {
+                Console.WriteLine("Existing service state detected. Skipping install bootstrap.");
+                return;
+            }
+
+            // Reinstall safety: if firewall rule already exists, do not touch firewall/whitelist bootstrap.
+            if (DoesFirewallRuleExistForInstall("RDP_BLOCK_ALL"))
+            {
+                Console.WriteLine("Existing firewall rule RDP_BLOCK_ALL detected. Skipping install bootstrap.");
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(logDirectory);
+
+                var whitelist = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (File.Exists(whitelistPath))
+                {
+                    foreach (string raw in File.ReadAllLines(whitelistPath, Encoding.UTF8))
+                    {
+                        string value = raw?.Trim() ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(value))
+                            continue;
+
+                        if (IPAddress.TryParse(value, out _))
+                            whitelist.Add(value);
+                    }
+                }
+
+                foreach (string ip in GetLocalAutoWhitelistIpsForInstall())
+                    whitelist.Add(ip);
+
+                File.WriteAllLines(whitelistPath, whitelist.OrderBy(x => x, StringComparer.OrdinalIgnoreCase), Encoding.UTF8);
+                Console.WriteLine($"Whitelist initialized: {whitelist.Count} entries");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Whitelist bootstrap warning: {ex.Message}");
+            }
+
+            EnsureBlockRuleExistsForInstall();
+        }
+
+        static void EnsureBlockRuleExistsForInstall()
+        {
+            try
+            {
+                bool ruleExists = DoesFirewallRuleExistForInstall("RDP_BLOCK_ALL");
+
+                if (ruleExists)
+                {
+                    Console.WriteLine("Firewall rule RDP_BLOCK_ALL already exists");
+                    return;
+                }
+
+                var createPsi = new ProcessStartInfo
+                {
+                    FileName = "netsh.exe",
+                    Arguments = "advfirewall firewall add rule name=\"RDP_BLOCK_ALL\" dir=in action=block protocol=any remoteip=\"255.255.255.255\" profile=any enable=yes",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (var createProc = Process.Start(createPsi))
+                {
+                    if (createProc == null)
+                    {
+                        Console.WriteLine("Firewall bootstrap warning: netsh process start failed");
+                        return;
+                    }
+
+                    string output = createProc.StandardOutput.ReadToEnd() + createProc.StandardError.ReadToEnd();
+                    createProc.WaitForExit(10000);
+                    if (createProc.ExitCode == 0 || output.IndexOf("Ok", StringComparison.OrdinalIgnoreCase) >= 0 || output.IndexOf("ОК", StringComparison.OrdinalIgnoreCase) >= 0)
+                        Console.WriteLine("Firewall rule RDP_BLOCK_ALL created");
+                    else
+                        Console.WriteLine($"Firewall bootstrap warning: failed to create RDP_BLOCK_ALL (exit {createProc.ExitCode}) {output}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Firewall bootstrap warning: {ex.Message}");
+            }
+        }
+
+        static bool DoesFirewallRuleExistForInstall(string ruleName)
+        {
+            try
+            {
+                var checkPsi = new ProcessStartInfo
+                {
+                    FileName = "netsh.exe",
+                    Arguments = $"advfirewall firewall show rule name=\"{ruleName}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (var checkProc = Process.Start(checkPsi))
+                {
+                    if (checkProc == null)
+                        return false;
+
+                    checkProc.WaitForExit(5000);
+                    return checkProc.ExitCode == 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static HashSet<string> GetLocalAutoWhitelistIpsForInstall()
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "127.0.0.1"
+            };
+
+            try
+            {
+                foreach (var ip in Dns.GetHostAddresses(Dns.GetHostName()))
+                {
+                    if (ip.AddressFamily != AddressFamily.InterNetwork)
+                        continue;
+
+                    string text = ip.ToString();
+                    if (IsLocalOrPrivateIpForInstall(text))
+                        set.Add(text);
+                }
+            }
+            catch
+            {
+            }
+
+            return set;
+        }
+
+        static bool IsLocalOrPrivateIpForInstall(string ipAddress)
+        {
+            if (!IPAddress.TryParse(ipAddress, out IPAddress parsedIp))
+                return false;
+
+            var ip = parsedIp.IsIPv4MappedToIPv6 ? parsedIp.MapToIPv4() : parsedIp;
+            if (IPAddress.IsLoopback(ip))
+                return true;
+
+            if (ip.AddressFamily == AddressFamily.InterNetwork)
+            {
+                byte[] bytes = ip.GetAddressBytes();
+                if (bytes.Length != 4)
+                    return false;
+
+                return bytes[0] == 10
+                    || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                    || (bytes[0] == 192 && bytes[1] == 168)
+                    || (bytes[0] == 169 && bytes[1] == 254);
+            }
+
+            return false;
         }
 
         static void UninstallService()
@@ -218,6 +399,8 @@ class Program
         private volatile int failedAttemptsThreshold = DEFAULT_FAILED_ATTEMPTS_THRESHOLD;
         private volatile int blockMinutes = DEFAULT_BLOCK_MINUTES;
         private volatile int rdpPort = DEFAULT_RDP_PORT;
+        private volatile int ipAbuseWindowMinutes = 10;
+        private volatile int ipAbuseDistinctUsersThreshold = 3;
         private volatile List<BlockLevel> blockLevels = new List<BlockLevel> { new BlockLevel { Attempts = 3, BlockMinutes = 20 } };
         private volatile TelegramConfig? telegramConfig = null;
         private volatile string uiLanguage = "UA";
@@ -245,11 +428,11 @@ class Program
         private enum PendingTelegramCommandType
         {
             None,
-            StartPassword,
             BanIp,
             BanDuration,
             UnbanIp,
-            HereIp
+            HereIp,
+            AddLimitedUserPhone
         }
 
         private sealed class PendingTelegramCommand
@@ -264,7 +447,6 @@ class Program
             public DateTime CreatedUtc;
         }
 
-        private const string StartAccessPassword = "Sin123";
         private static readonly TimeSpan HereProbeTokenTtl = TimeSpan.FromMinutes(10);
 
         private readonly Dictionary<string, BanState> bans = new Dictionary<string, BanState>(StringComparer.OrdinalIgnoreCase);
@@ -275,20 +457,36 @@ class Program
         private readonly Dictionary<string, DateTime> recentRdpPortActivityByIp = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, PendingTelegramCommand> pendingTelegramCommands = new Dictionary<string, PendingTelegramCommand>(StringComparer.Ordinal);
         private readonly HashSet<string> authorizedTelegramChats = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> limitedTelegramChats = new HashSet<string>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> lastHereIpByChat = new Dictionary<string, string>(StringComparer.Ordinal);
         private string lastHereIpGlobal = string.Empty;
         private readonly Dictionary<string, HereProbeTokenState> hereProbeTokens = new Dictionary<string, HereProbeTokenState>(StringComparer.Ordinal);
         private readonly object pendingTelegramCommandsLock = new object();
         private readonly object authorizedTelegramChatsLock = new object();
+        private readonly object limitedTelegramChatsLock = new object();
         private readonly object hereIpMemoryLock = new object();
         private readonly object hereProbeTokensLock = new object();
         private readonly object tcpProbeStateLock = new object();
+        private readonly object bansLock = new object();
+        // login → IP tracking: key = IP (normalized), value = username
+        private readonly Dictionary<string, string> activeLogonsByIp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly object activeLogonsByIpLock = new object();
+        private EventLogWatcher? successLogonWatcher;
         private static readonly TimeSpan TcpProbeWindow = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan TcpProbeDedupWindow = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan FailedLogonPortCorrelationWindow = TimeSpan.FromMinutes(5);
         private const int TCP_PROBE_THRESHOLD = 3;
+        private const string LimitedSelfUnbanFixedIp = "46.229.58.64";
         private HttpListener? hereProbeListener;
         private Thread? hereProbeThread;
+
+        private sealed class IpFailedUsersState
+        {
+            public Dictionary<string, DateTime> Users = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private readonly Dictionary<string, IpFailedUsersState> failedUsersByIp = new Dictionary<string, IpFailedUsersState>(StringComparer.OrdinalIgnoreCase);
+        private readonly object failedUsersByIpLock = new object();
 
         public RDPSecurityService()
         {
@@ -301,6 +499,7 @@ class Program
 
         protected override void OnStart(string[] args)
         {
+            RequestAdditionalTime(120000);
             isRunning = true;
             serviceStartUtc = DateTime.UtcNow;
             logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RDPSecurityService");
@@ -312,45 +511,62 @@ class Program
             whitelistPath = Path.Combine(logDirectory, "whiteList.log");
             configPath = Path.Combine(logDirectory, "config.json");
 
-            // Чтобы монитор мог писать/редактировать файлы без запуска от Администратора,
-            // даём группе "Пользователи" права Modify на папку и существующие файлы.
-            EnsureWritableByUsers(logDirectory);
+            WriteLog("Service start requested by SCM.");
 
-            LoadOrCreateConfig();
-            WriteLog($"Config: Port={rdpPort}; Levels={string.Join(",", blockLevels.Select(l => $"{l.Attempts}->{l.BlockMinutes}m"))}");
+            // Keep OnStart fast to avoid SCM timeout (1053) on slower or heavily restricted hosts.
+            _ = Task.Run(InitializeServiceRuntime);
+        }
 
-            WriteLog("RDP Security Service started. Monitoring authentication failures...");
-            WriteLog($"Logs directory: {logDirectory}");
-            WriteLog($"Telegram notifications: {(telegramConfig?.Enabled == true ? "ENABLED" : "DISABLED")}");
-            WriteLog("Startup mode: realtime Security 4625 watcher");
-
-            StartFailedLogonWatcher();
-
-            monitorThread = new Thread(MonitorAuthenticationFailures);
-            monitorThread.IsBackground = true;
-            monitorThread.Start();
-
-            StartTelegramCommandWatcher();
-            StartHereProbeWatcher();
-
-            // Watch for changes in whitelist and blocklist to update firewall rule
+        private void InitializeServiceRuntime()
+        {
             try
             {
-                logWatcher = new FileSystemWatcher(logDirectory);
-                logWatcher.Filter = "*.*";
-                logWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.CreationTime;
-                logWatcher.Changed += OnLogChanged;
-                logWatcher.Created += OnLogChanged;
-                logWatcher.Deleted += OnLogChanged;
-                logWatcher.EnableRaisingEvents = true;
-            }
-            catch { }
+                LoadOrCreateConfig();
+                WriteLog($"Config: Port={rdpPort}; Levels={string.Join(",", blockLevels.Select(l => $"{l.Attempts}->{l.BlockMinutes}m"))}");
 
-            WriteLog("Authentication monitoring thread started.");
-            // TryStartGate(); // Legacy gate functionality disabled
+                // ACL update can be slow on some systems/policies. Run it in background.
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        EnsureWritableByUsers(logDirectory);
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteLog($"ACL background setup error: {ex.Message}");
+                    }
+                });
 
-            _ = Task.Run(() =>
-            {
+                WriteLog("RDP Security Service started. Monitoring authentication failures...");
+                WriteLog($"Logs directory: {logDirectory}");
+                WriteLog($"Telegram notifications: {(telegramConfig?.Enabled == true ? "ENABLED" : "DISABLED")}");
+                WriteLog("Startup mode: realtime Security 4625 watcher");
+
+                StartFailedLogonWatcher();
+                StartSuccessLogonWatcher();
+
+                monitorThread = new Thread(MonitorAuthenticationFailures);
+                monitorThread.IsBackground = true;
+                monitorThread.Start();
+
+                StartTelegramCommandWatcher();
+                StartHereProbeWatcher();
+
+                // Watch for changes in whitelist and blocklist to update firewall rule
+                try
+                {
+                    logWatcher = new FileSystemWatcher(logDirectory);
+                    logWatcher.Filter = "*.*";
+                    logWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.CreationTime;
+                    logWatcher.Changed += OnLogChanged;
+                    logWatcher.Created += OnLogChanged;
+                    logWatcher.Deleted += OnLogChanged;
+                    logWatcher.EnableRaisingEvents = true;
+                }
+                catch { }
+
+                WriteLog("Authentication monitoring thread started.");
+
                 try
                 {
                     RequestFirewallSync(force: true);
@@ -361,7 +577,11 @@ class Program
                 }
 
                 SendServiceNotification("🚀 СТАРТАНУЛ СЛУЖБУ");
-            });
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Startup initialization error: {ex.Message}");
+            }
         }
 
         protected override void OnStop()
@@ -373,6 +593,7 @@ class Program
             // try { gateListener?.Stop(); } catch { }
 
             StopFailedLogonWatcher();
+            StopSuccessLogonWatcher();
 
             if (monitorThread != null)
                 monitorThread.Join(5000);
@@ -432,6 +653,96 @@ class Program
                 }
 
                 Thread.Sleep(CHECK_INTERVAL);
+            }
+        }
+
+        private void StartSuccessLogonWatcher()
+        {
+            try
+            {
+                // Watch 4624 (logon success) and 4634/4647 (logoff) to maintain activeLogonsByIp
+                var query = new EventLogQuery("Security", PathType.LogName, "*[System[(EventID=4624 or EventID=4634 or EventID=4647)]]")
+                {
+                    ReverseDirection = false,
+                    TolerateQueryErrors = true
+                };
+                successLogonWatcher = new EventLogWatcher(query);
+                successLogonWatcher.EventRecordWritten += OnSuccessLogonEventRecordWritten;
+                successLogonWatcher.Enabled = true;
+                WriteLog("Security 4624/4634/4647 watcher started.");
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Success logon watcher start error: {ex.Message}");
+            }
+        }
+
+        private void StopSuccessLogonWatcher()
+        {
+            try
+            {
+                if (successLogonWatcher == null) return;
+                successLogonWatcher.Enabled = false;
+                successLogonWatcher.EventRecordWritten -= OnSuccessLogonEventRecordWritten;
+                successLogonWatcher.Dispose();
+                successLogonWatcher = null;
+                WriteLog("Security 4624/4634/4647 watcher stopped.");
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Success logon watcher stop error: {ex.Message}");
+            }
+        }
+
+        private void OnSuccessLogonEventRecordWritten(object? sender, EventRecordWrittenEventArgs e)
+        {
+            if (!isRunning || e.EventException != null || e.EventRecord == null) return;
+            EventRecord record = e.EventRecord;
+            try
+            {
+                int eventId = record.Id;
+                string xml = record.ToXml();
+
+                if (eventId == 4624)
+                {
+                    // LogonType 10 = RemoteInteractive (RDP), also accept 3 (Network) as some RDP clients use it
+                    string logonTypeStr = ExtractEventDataField(xml, "LogonType");
+                    if (logonTypeStr != "10" && logonTypeStr != "3") return;
+
+                    string ip = ExtractEventDataField(xml, "IpAddress");
+                    if (string.IsNullOrWhiteSpace(ip) || ip == "-" || ip == "::1" || ip == "127.0.0.1") return;
+
+                    string login = ExtractEventDataField(xml, "TargetUserName");
+                    string normalizedIp = NormalizeIpCandidate(ip);
+                    if (string.IsNullOrWhiteSpace(normalizedIp)) return;
+
+                    lock (activeLogonsByIpLock)
+                    {
+                        activeLogonsByIp[normalizedIp] = login;
+                    }
+                    WriteLog($"Active logon registered: {login} from {normalizedIp}");
+                }
+                else // 4634 or 4647 — logoff
+                {
+                    string ip = ExtractEventDataField(xml, "IpAddress");
+                    if (string.IsNullOrWhiteSpace(ip) || ip == "-") return;
+                    string normalizedIp = NormalizeIpCandidate(ip);
+                    if (string.IsNullOrWhiteSpace(normalizedIp)) return;
+
+                    lock (activeLogonsByIpLock)
+                    {
+                        activeLogonsByIp.Remove(normalizedIp);
+                    }
+                    WriteLog($"Active logon removed for IP: {normalizedIp} (event {eventId})");
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Success logon watcher callback error: {ex.Message}");
+            }
+            finally
+            {
+                try { record.Dispose(); } catch { }
             }
         }
 
@@ -522,22 +833,37 @@ class Program
 
         private void ProcessFailedLogonEvent(string sourceIP, string targetUser, DateTime eventTimeLocal)
         {
+            if (IsIPWhitelisted(sourceIP))
+            {
+                return;
+            }
+
+            // If the failing user is the same as the currently logged-in user from this IP
+            // (e.g. screen unlock typo) — ignore, don't count. Only count if it's a different
+            // user (brute-force from same NAT IP).
+            string normalizedSource = NormalizeIpCandidate(sourceIP);
+            if (!string.IsNullOrWhiteSpace(normalizedSource) && !string.IsNullOrWhiteSpace(targetUser))
+            {
+                string? activeUser = null;
+                lock (activeLogonsByIpLock)
+                {
+                    activeLogonsByIp.TryGetValue(normalizedSource, out activeUser);
+                }
+                if (!string.IsNullOrWhiteSpace(activeUser) &&
+                    string.Equals(activeUser, targetUser, StringComparison.OrdinalIgnoreCase))
+                {
+                    WriteLog($"Ignored failed logon — same user '{targetUser}' is active from {sourceIP} (screen unlock typo?)");
+                    return;
+                }
+            }
+
             int attempts;
             lock (failedAttemptsLock)
             {
-                if (!failedAttempts.ContainsKey(sourceIP))
-                    failedAttempts[sourceIP] = 0;
-                failedAttempts[sourceIP]++;
+                if (!failedAttempts.TryGetValue(sourceIP, out int current))
+                    current = 0;
+                failedAttempts[sourceIP] = current + 1;
                 attempts = failedAttempts[sourceIP];
-            }
-
-            if (IsIPWhitelisted(sourceIP))
-            {
-                lock (failedAttemptsLock)
-                {
-                    failedAttempts[sourceIP] = 0;
-                }
-                return;
             }
 
             WriteAccessLog(sourceIP, eventTimeLocal, attempts);
@@ -547,13 +873,21 @@ class Program
             var level = GetLevelForAttempts(attempts);
             if (level != null && ShouldApplyBan(sourceIP, attempts, level, DateTime.Now))
             {
+                bool ipAbuseDetected = RegisterFailedUserAndCheckIpAbuse(sourceIP, targetUser, DateTime.Now);
+                if (!ipAbuseDetected)
+                {
+                    WriteLog($"Per-IP threshold reached but skipped ban for {sourceIP}: no clear abuse (need >= {ipAbuseDistinctUsersThreshold} distinct users in {ipAbuseWindowMinutes}m)");
+                    return;
+                }
+
                 ApplyIpBan(
                     sourceIP,
                     eventTimeLocal,
                     attempts,
                     level.BlockMinutes,
                     level.Attempts,
-                    "per-ip-threshold");
+                    "per-ip-threshold",
+                    targetUser);
             }
         }
 
@@ -616,7 +950,7 @@ class Program
 
                 string normalizedMessage = NormalizeTelegramText(message);
                 string effectiveReplyMarkupJson = string.IsNullOrWhiteSpace(replyMarkupJson)
-                    ? BuildCommandKeyboardJson()
+                    ? BuildDefaultKeyboardJsonForChat(chatId)
                     : replyMarkupJson;
 
                 using (var client = new System.Net.Http.HttpClient())
@@ -668,6 +1002,8 @@ class Program
                 {
                     new[] { "/help" },
                     new[] { "/status", "/status all" },
+                    new[] { "/service stop", "/monitor stop" },
+                    new[] { "/monitor start", "/thresholds" },
                     new[] { "/here" },
                     new[] { "/ban", "/unban" }
                 },
@@ -675,6 +1011,55 @@ class Program
                 one_time_keyboard = false,
                 selective = true,
                 input_field_placeholder = UiText("Оберіть команду або введіть її вручну", "Choose a command or type it manually")
+            };
+
+            return JsonSerializer.Serialize(keyboard);
+        }
+
+        private string BuildDefaultKeyboardJsonForChat(string chatId)
+        {
+            if (IsLimitedTelegramChatAuthorized(chatId) && !IsTelegramChatAuthorized(chatId))
+                return BuildSelfUnbanKeyboardJson();
+
+            return BuildCommandKeyboardJson();
+        }
+
+        private string BuildSelfUnbanKeyboardJson()
+        {
+            var keyboard = new
+            {
+                keyboard = new[]
+                {
+                    new[] { UiText("Розблокуй мене", "Unblock me") }
+                },
+                resize_keyboard = true,
+                one_time_keyboard = false,
+                selective = true,
+                input_field_placeholder = UiText("Натисніть кнопку для саморозблокування", "Press button for self-unban")
+            };
+
+            return JsonSerializer.Serialize(keyboard);
+        }
+
+        private string BuildContactRequestKeyboardJson()
+        {
+            var keyboard = new
+            {
+                keyboard = new object[]
+                {
+                    new object[]
+                    {
+                        new
+                        {
+                            text = UiText("Поділитися телефоном", "Share phone"),
+                            request_contact = true
+                        }
+                    }
+                },
+                resize_keyboard = true,
+                one_time_keyboard = false,
+                selective = true,
+                input_field_placeholder = UiText("Поділіться номером телефону", "Share your phone number")
             };
 
             return JsonSerializer.Serialize(keyboard);
@@ -1058,7 +1443,13 @@ class Program
                             ? textElement.GetString() ?? string.Empty
                             : string.Empty;
 
-                        if (!string.Equals(incomingChatId, cfg.ChatId, StringComparison.Ordinal))
+                        string contactPhone = TryExtractContactPhone(messageElement);
+                        bool isAdminAuthorized = IsTelegramChatAuthorized(incomingChatId);
+                        bool isLimitedAuthorized = IsLimitedTelegramChatAuthorized(incomingChatId);
+
+                        if (!string.Equals(incomingChatId, cfg.ChatId, StringComparison.Ordinal)
+                            && !isAdminAuthorized
+                            && !isLimitedAuthorized)
                         {
                             bool canAttemptLogin = false;
                             string trimmedIncoming = text.Trim();
@@ -1067,9 +1458,8 @@ class Program
                             {
                                 canAttemptLogin = true;
                             }
-                            else if (!trimmedIncoming.StartsWith("/", StringComparison.Ordinal)
-                                && TryGetPendingTelegramCommand(incomingChatId, out PendingTelegramCommand pending)
-                                && pending.Type == PendingTelegramCommandType.StartPassword)
+
+                            if (!string.IsNullOrWhiteSpace(contactPhone))
                             {
                                 canAttemptLogin = true;
                             }
@@ -1079,6 +1469,13 @@ class Program
                                 WriteLog($"Ignoring Telegram command from unauthorized chat: {incomingChatId}");
                                 continue;
                             }
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(contactPhone))
+                        {
+                            WriteLog($"Telegram contact received from chat {incomingChatId}");
+                            HandleTelegramContactShare(incomingChatId, contactPhone);
+                            continue;
                         }
 
                         if (!string.IsNullOrWhiteSpace(text))
@@ -1116,17 +1513,32 @@ class Program
 
                 command = command.ToLowerInvariant();
 
+                bool isAdminChat = IsTelegramChatAuthorized(chatId) || string.Equals(chatId, telegramConfig?.ChatId, StringComparison.Ordinal);
+                bool isLimitedChat = IsLimitedTelegramChatAuthorized(chatId);
+
                 if (command == "/start")
                 {
-                    SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.StartPassword });
+                    ClearPendingTelegramCommand(chatId);
+
+                    if (isAdminChat)
+                    {
+                        AuthorizeTelegramChat(chatId);
+                        TrySendTelegramText(
+                            chatId,
+                            UiText("✅ Вхід виконано. Команди розблоковано.", "✅ Signed in. Commands are unlocked."),
+                            BuildCommandKeyboardJson());
+                        return;
+                    }
+
+                    AuthorizeLimitedTelegramChat(chatId);
                     TrySendTelegramText(
                         chatId,
-                        UiText("🔐 Введіть пароль доступу для входу.", "🔐 Enter access password to sign in."),
-                        BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
+                        UiText("✅ Доступ обмеженого користувача активовано.", "✅ Limited user access activated."),
+                        BuildSelfUnbanKeyboardJson());
                     return;
                 }
 
-                if (!IsTelegramChatAuthorized(chatId))
+                if (!isAdminChat && !isLimitedChat)
                 {
                     if (command == "/cancel")
                     {
@@ -1135,7 +1547,43 @@ class Program
                         return;
                     }
 
-                    TrySendTelegramText(chatId, UiText("🔒 Доступ закрито. Спочатку виконайте /start і введіть пароль.", "🔒 Access is locked. Run /start and enter the password first."));
+                    TrySendTelegramText(chatId, UiText("🔒 Доступ закрито. Спочатку виконайте /start.", "🔒 Access is locked. Run /start first."));
+                    return;
+                }
+
+                if (isLimitedChat && !isAdminChat)
+                {
+                    if (command == "/cancel")
+                    {
+                        ClearPendingTelegramCommand(chatId);
+                        TrySendTelegramText(chatId, UiText("Дію скасовано.", "Action cancelled."), BuildSelfUnbanKeyboardJson());
+                        return;
+                    }
+
+                    bool isSelfUnbanButton = string.Equals(trimmed, UiText("Розблокуй мене", "Unblock me"), StringComparison.OrdinalIgnoreCase);
+                    if (isSelfUnbanButton || command == "/unbanme")
+                    {
+                        ClearPendingTelegramCommand(chatId);
+                        TelegramUnblockResult limitedUnbanResult = UnblockIpFromTelegramCore(LimitedSelfUnbanFixedIp);
+                        TrySendTelegramText(
+                            chatId,
+                            limitedUnbanResult.WasUnblocked
+                                ? "ок разлочил"
+                                : "не нашел, у тебя все ОК",
+                            BuildSelfUnbanKeyboardJson());
+                        return;
+                    }
+
+                    if (command == "/?" || command == "/help")
+                    {
+                        TrySendTelegramText(chatId, BuildLimitedHelpReply(), BuildSelfUnbanKeyboardJson());
+                        return;
+                    }
+
+                    TrySendTelegramText(
+                        chatId,
+                        UiText("Для вашої ролі доступна лише кнопка «Розблокуй мене».", "Only the 'Unblock me' button is available for your role."),
+                        BuildSelfUnbanKeyboardJson());
                     return;
                 }
 
@@ -1159,6 +1607,24 @@ class Program
                     return;
                 }
 
+                if (command == "/adduser")
+                {
+                    if (parts.Length >= 2)
+                    {
+                        ClearPendingTelegramCommand(chatId);
+                        TrySendTelegramText(chatId, RegisterLimitedTelegramPhone(parts[1]));
+                        return;
+                    }
+
+                    SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.AddLimitedUserPhone });
+                    TrySendTelegramText(
+                        chatId,
+                        UiText("Введіть номер телефону користувача у форматі +380..., або /cancel.",
+                               "Enter user phone in format +380..., or /cancel."),
+                        BuildForceReplyJson(UiText("Наприклад: +380991234567", "Example: +380991234567")));
+                    return;
+                }
+
                 if (command == "/status")
                 {
                     if (parts.Length < 2)
@@ -1174,6 +1640,26 @@ class Program
                     }
 
                     TrySendTelegramText(chatId, BuildIpStatusReply(parts[1]));
+                    return;
+                }
+
+                if (command == "/service")
+                {
+                    string action = parts.Length >= 2 ? parts[1] : "status";
+                    TrySendTelegramText(chatId, HandleServiceTelegramCommand(action));
+                    return;
+                }
+
+                if (command == "/monitor")
+                {
+                    string action = parts.Length >= 2 ? parts[1] : "status";
+                    TrySendTelegramText(chatId, HandleMonitorTelegramCommand(action));
+                    return;
+                }
+
+                if (command == "/thresholds" || command == "/levels")
+                {
+                    TrySendTelegramText(chatId, BuildThresholdsReply());
                     return;
                 }
 
@@ -1257,13 +1743,21 @@ class Program
             {
                 UiText("📋 Доступні команди:", "📋 Available commands:"),
                 "",
-                UiText("/start — вхід за паролем", "/start — sign in with password"),
+                  UiText("/start — вхід та активація чату керування", "/start — sign in and activate control chat"),
+                                UiText("/adduser <телефон> — додати користувача з кнопкою 'Розблокуй мене'",
+                                             "/adduser <phone> — add limited user with 'Unblock me' button"),
                 UiText("/status — стан системи (служба, процеси)",
                        "/status — system state (service, processes)"),
                 UiText("/status all — список усіх активних блокувань",
                        "/status all — list all active blocks"),
                 UiText("/status <ip> — детальний стан конкретного IP",
                        "/status <ip> — detailed info for a specific IP"),
+                  UiText("/service [status|start|stop|restart] — керування службою",
+                      "/service [status|start|stop|restart] — service control"),
+                  UiText("/monitor [status|start|stop|restart] — керування монітором",
+                      "/monitor [status|start|stop|restart] — monitor control"),
+                  UiText("/thresholds або /levels — поточні пороги блокування",
+                      "/thresholds or /levels — current block thresholds"),
                   UiText("/here — перевірити свій IP", "/here — check your IP status"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
                        "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
@@ -1274,6 +1768,18 @@ class Program
                 UiText("/? або /help — ця довідка",
                        "/? or /help — this help message"),
             };
+            return string.Join("\n", lines);
+        }
+
+        private string BuildLimitedHelpReply()
+        {
+            var lines = new List<string>
+            {
+                UiText("📋 Доступна команда:", "📋 Available command:"),
+                UiText("Кнопка «Розблокуй мене» — зняти блок тільки для дозволеного IP.",
+                       "'Unblock me' button — remove block only for the allowed IP.")
+            };
+
             return string.Join("\n", lines);
         }
 
@@ -1387,11 +1893,27 @@ class Program
             }
         }
 
+        private bool IsLimitedTelegramChatAuthorized(string chatId)
+        {
+            lock (limitedTelegramChatsLock)
+            {
+                return limitedTelegramChats.Contains(chatId);
+            }
+        }
+
         private void AuthorizeTelegramChat(string chatId)
         {
             lock (authorizedTelegramChatsLock)
             {
                 authorizedTelegramChats.Add(chatId);
+            }
+        }
+
+        private void AuthorizeLimitedTelegramChat(string chatId)
+        {
+            lock (limitedTelegramChatsLock)
+            {
+                limitedTelegramChats.Add(chatId);
             }
         }
 
@@ -1433,26 +1955,6 @@ class Program
 
             switch (pendingCommand.Type)
             {
-                case PendingTelegramCommandType.StartPassword:
-                    if (!string.Equals(text.Trim(), StartAccessPassword, StringComparison.Ordinal))
-                    {
-                        SetPendingTelegramCommand(chatId, new PendingTelegramCommand { Type = PendingTelegramCommandType.StartPassword });
-                        TrySendTelegramText(
-                            chatId,
-                            UiText("Невірний пароль. Спробуйте ще раз або /cancel.", "Invalid password. Try again or /cancel."),
-                            BuildForceReplyJson(UiText("Введіть пароль", "Enter password")));
-                        return true;
-                    }
-
-                    ClearPendingTelegramCommand(chatId);
-                    AuthorizeTelegramChat(chatId);
-                    PromoteTelegramControlChat(chatId);
-                    TrySendTelegramText(
-                        chatId,
-                        UiText("✅ Вхід виконано. Команди розблоковано.", "✅ Signed in. Commands are unlocked."),
-                        BuildCommandKeyboardJson());
-                    return true;
-
                 case PendingTelegramCommandType.BanIp:
                     if (!IPAddress.TryParse(text, out IPAddress parsedIp))
                     {
@@ -1535,9 +2037,151 @@ class Program
                         RememberHereIp(chatId, detectedIp);
                         TrySendTelegramText(chatId, BuildIpStatusReply(detectedIp));
                     return true;
+
+                case PendingTelegramCommandType.AddLimitedUserPhone:
+                    if (!IsTelegramChatAuthorized(chatId) && !string.Equals(chatId, telegramConfig?.ChatId, StringComparison.Ordinal))
+                    {
+                        ClearPendingTelegramCommand(chatId);
+                        TrySendTelegramText(chatId, UiText("Недостатньо прав для цієї дії.", "Insufficient privileges for this action."));
+                        return true;
+                    }
+
+                    string registerResult = RegisterLimitedTelegramPhone(text);
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, registerResult);
+                    return true;
             }
 
             return false;
+        }
+
+        private string TryExtractContactPhone(JsonElement messageElement)
+        {
+            if (!messageElement.TryGetProperty("contact", out JsonElement contactElement))
+                return string.Empty;
+
+            if (!contactElement.TryGetProperty("phone_number", out JsonElement phoneElement))
+                return string.Empty;
+
+            return phoneElement.GetString() ?? string.Empty;
+        }
+
+        private void HandleTelegramContactShare(string chatId, string rawPhone)
+        {
+            try
+            {
+                string normalizedPhone = NormalizePhoneForTelegramRole(rawPhone);
+                if (string.IsNullOrWhiteSpace(normalizedPhone))
+                {
+                    TrySendTelegramText(chatId, UiText("Некоректний номер телефону.", "Invalid phone number."));
+                    return;
+                }
+
+                if (!IsLimitedPhoneAllowed(normalizedPhone))
+                {
+                    TrySendTelegramText(chatId, UiText("Цей номер не має доступу.", "This phone is not allowed."));
+                    return;
+                }
+
+                ClearPendingTelegramCommand(chatId);
+                AuthorizeLimitedTelegramChat(chatId);
+                TrySendTelegramText(
+                    chatId,
+                    UiText("✅ Доступ надано. Використовуйте кнопку «Розблокуй мене».", "✅ Access granted. Use the 'Unblock me' button."),
+                    BuildSelfUnbanKeyboardJson());
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram contact processing error: {ex.Message}");
+            }
+        }
+
+        private bool IsLimitedPhoneAllowed(string normalizedPhone)
+        {
+            var cfg = telegramConfig;
+            if (cfg == null || cfg.LimitedPhones == null || cfg.LimitedPhones.Count == 0)
+                return false;
+
+            foreach (string allowed in cfg.LimitedPhones)
+            {
+                string normalizedAllowed = NormalizePhoneForTelegramRole(allowed);
+                if (!string.IsNullOrWhiteSpace(normalizedAllowed)
+                    && string.Equals(normalizedAllowed, normalizedPhone, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private string RegisterLimitedTelegramPhone(string rawPhone)
+        {
+            string normalizedPhone = NormalizePhoneForTelegramRole(rawPhone);
+            if (string.IsNullOrWhiteSpace(normalizedPhone))
+                return UiText("Некоректний формат номера. Приклад: +380991234567", "Invalid phone format. Example: +380991234567");
+
+            try
+            {
+                lock (configLock)
+                {
+                    ServiceConfig? cfg = null;
+                    if (File.Exists(configPath))
+                    {
+                        string json = File.ReadAllText(configPath);
+                        cfg = JsonSerializer.Deserialize<ServiceConfig>(json, ServiceConfigJson.Options);
+                    }
+
+                    cfg ??= ServiceConfig.CreateDefault();
+                    cfg.Telegram ??= new TelegramConfig { Enabled = false, BotToken = string.Empty, ChatId = string.Empty };
+                    cfg.Telegram.LimitedPhones ??= new List<string>();
+
+                    bool exists = cfg.Telegram.LimitedPhones
+                        .Select(NormalizePhoneForTelegramRole)
+                        .Any(p => string.Equals(p, normalizedPhone, StringComparison.Ordinal));
+
+                    if (!exists)
+                    {
+                        cfg.Telegram.LimitedPhones.Add(normalizedPhone);
+                        cfg.Telegram.LimitedPhones = cfg.Telegram.LimitedPhones
+                            .Select(NormalizePhoneForTelegramRole)
+                            .Where(p => !string.IsNullOrWhiteSpace(p))
+                            .Distinct(StringComparer.Ordinal)
+                            .OrderBy(p => p, StringComparer.Ordinal)
+                            .ToList();
+
+                        File.WriteAllText(configPath, JsonSerializer.Serialize(cfg, ServiceConfigJson.Options));
+                        telegramConfig = cfg.Telegram;
+                    }
+
+                    return exists
+                        ? UiText($"Користувач вже існує: {normalizedPhone}", $"User already exists: {normalizedPhone}")
+                        : UiText($"Користувача додано: {normalizedPhone}", $"User added: {normalizedPhone}");
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Register limited phone error: {ex.Message}");
+                return UiText("Помилка додавання користувача.", "Failed to add user.");
+            }
+        }
+
+        private string NormalizePhoneForTelegramRole(string rawPhone)
+        {
+            if (string.IsNullOrWhiteSpace(rawPhone))
+                return string.Empty;
+
+            string trimmed = rawPhone.Trim();
+            bool hasPlus = trimmed.StartsWith("+", StringComparison.Ordinal);
+            var digits = new StringBuilder(trimmed.Length);
+            foreach (char c in trimmed)
+            {
+                if (char.IsDigit(c))
+                    digits.Append(c);
+            }
+
+            if (digits.Length < 10 || digits.Length > 15)
+                return string.Empty;
+
+            return (hasPlus ? "+" : "+") + digits.ToString();
         }
 
         private string ExtractFirstIpFromText(string raw)
@@ -1685,16 +2329,42 @@ class Program
                 }
 
                 var address = Marshal.PtrToStructure<WTS_CLIENT_ADDRESS>(buffer);
-                if (address.Address == null || address.AddressFamily != 2 || address.Address.Length < 6)
+                if (address.Address == null || address.Address.Length < 6)
                     return string.Empty;
 
-                return string.Join('.', address.Address[2], address.Address[3], address.Address[4], address.Address[5]);
+                // AF_INET (2): first 2 bytes are reserved, IPv4 is stored in bytes [2..5]
+                if (address.AddressFamily == 2)
+                {
+                    return string.Join('.', address.Address[2], address.Address[3], address.Address[4], address.Address[5]);
+                }
+
+                // AF_INET6 (23): first 2 bytes are reserved, IPv6 is stored in bytes [2..17]
+                if (address.AddressFamily == 23 && address.Address.Length >= 18)
+                {
+                    byte[] ipv6Bytes = new byte[16];
+                    Buffer.BlockCopy(address.Address, 2, ipv6Bytes, 0, 16);
+                    var ip = new IPAddress(ipv6Bytes);
+                    return ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4().ToString() : ip.ToString();
+                }
+
+                return string.Empty;
             }
             finally
             {
                 if (buffer != IntPtr.Zero)
                     WTSFreeMemory(buffer);
             }
+        }
+
+        private bool AreSameIpAddress(string left, string right)
+        {
+            string leftNormalized = NormalizeIpCandidate(left);
+            string rightNormalized = NormalizeIpCandidate(right);
+
+            if (string.IsNullOrWhiteSpace(leftNormalized) || string.IsNullOrWhiteSpace(rightNormalized))
+                return false;
+
+            return string.Equals(leftNormalized, rightNormalized, StringComparison.OrdinalIgnoreCase);
         }
 
         private string ManualBanIpFromTelegram(string ipAddress, string durationStr)
@@ -1899,13 +2569,214 @@ class Program
             return string.Join("\n", lines);
         }
 
+        private string BuildThresholdsReply()
+        {
+            try
+            {
+                var levels = blockLevels ?? new List<BlockLevel>();
+                if (levels.Count == 0)
+                    return UiText("Пороги не налаштовані.", "No thresholds configured.");
+
+                var lines = new List<string>
+                {
+                    UiText("🎯 Поточні пороги блокування:", "🎯 Current block thresholds:")
+                };
+
+                for (int i = 0; i < levels.Count; i++)
+                {
+                    var level = levels[i];
+                    lines.Add($"L{i + 1}: {level.Attempts} -> {level.BlockMinutes}m");
+                }
+
+                lines.Add("");
+                lines.Add(UiText($"RDP порт: {rdpPort}", $"RDP port: {rdpPort}"));
+                lines.Add(UiText($"AntiBrute: {(antiBruteConfig?.Enabled == true ? "ON" : "OFF")}",
+                                 $"AntiBrute: {(antiBruteConfig?.Enabled == true ? "ON" : "OFF")}"));
+                return string.Join("\n", lines);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"BuildThresholdsReply error: {ex.Message}");
+                return UiText("Не вдалося отримати пороги.", "Failed to get thresholds.");
+            }
+        }
+
+        private string HandleServiceTelegramCommand(string actionRaw)
+        {
+            string action = (actionRaw ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(action) || action == "status")
+                return UiText($"Служба: {GetServiceStatusSummary()}", $"Service: {GetServiceStatusSummary()}");
+
+            if (action == "start")
+                return UiText("Служба вже запущена.", "Service is already running.");
+
+            if (action == "stop" || action == "restart")
+            {
+                try
+                {
+                    bool doRestart = action == "restart";
+                    if (doRestart)
+                    {
+                        // Restart must be scheduled in a separate process because this service process exits on stop.
+                        var restartPsi = new ProcessStartInfo
+                        {
+                            FileName = "cmd.exe",
+                            Arguments = "/c ping 127.0.0.1 -n 4 >nul & sc start RDPSecurityService",
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        Process.Start(restartPsi);
+                    }
+
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try
+                        {
+                            using (var service = new ServiceController("RDPSecurityService"))
+                            {
+                                service.Refresh();
+                                if (service.Status != ServiceControllerStatus.Stopped && service.Status != ServiceControllerStatus.StopPending)
+                                    service.Stop();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            try { WriteLog($"Telegram service {action} error: {ex.Message}"); } catch { }
+                        }
+                    });
+
+                    return doRestart
+                        ? UiText("♻️ Перезапуск служби ініційовано.", "♻️ Service restart initiated.")
+                        : UiText("🛑 Зупинка служби ініційована.", "🛑 Service stop initiated.");
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"HandleServiceTelegramCommand error: {ex.Message}");
+                    return UiText($"Помилка керування службою: {ex.Message}", $"Service control error: {ex.Message}");
+                }
+            }
+
+            return UiText("Невідома дія. Використовуйте /service status|start|stop|restart",
+                          "Unknown action. Use /service status|start|stop|restart");
+        }
+
+        private string HandleMonitorTelegramCommand(string actionRaw)
+        {
+            string action = (actionRaw ?? string.Empty).Trim().ToLowerInvariant();
+            bool running = IsProcessRunning("RDPMonitor");
+
+            if (string.IsNullOrWhiteSpace(action) || action == "status")
+                return running ? UiText("Монітор: ПРАЦЮЄ", "Monitor: RUNNING") : UiText("Монітор: ЗУПИНЕНО", "Monitor: STOPPED");
+
+            if (action == "stop")
+            {
+                if (!running)
+                    return UiText("Монітор вже зупинено.", "Monitor is already stopped.");
+
+                try
+                {
+                    var list = Process.GetProcessesByName("RDPMonitor");
+                    for (int i = 0; i < list.Length; i++)
+                    {
+                        try { list[i].Kill(); } catch { }
+                    }
+                    return UiText("🛑 Монітор зупинено.", "🛑 Monitor stopped.");
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Monitor stop error: {ex.Message}");
+                    return UiText($"Помилка зупинки монітора: {ex.Message}", $"Monitor stop error: {ex.Message}");
+                }
+            }
+
+            if (action == "start" || action == "restart")
+            {
+                try
+                {
+                    if (action == "restart" && running)
+                    {
+                        var list = Process.GetProcessesByName("RDPMonitor");
+                        for (int i = 0; i < list.Length; i++)
+                        {
+                            try { list[i].Kill(); } catch { }
+                        }
+                    }
+
+                    if (!TryResolveMonitorPath(out string monitorExe))
+                        return UiText("Не знайдено RDPMonitor.exe", "RDPMonitor.exe was not found");
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = monitorExe,
+                        WorkingDirectory = Path.GetDirectoryName(monitorExe) ?? AppDomain.CurrentDomain.BaseDirectory,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    Process.Start(psi);
+                    return action == "restart"
+                        ? UiText("♻️ Монітор перезапущено.", "♻️ Monitor restarted.")
+                        : UiText("▶️ Монітор запущено.", "▶️ Monitor started.");
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Monitor start/restart error: {ex.Message}");
+                    return UiText($"Помилка запуску монітора: {ex.Message}", $"Monitor start error: {ex.Message}");
+                }
+            }
+
+            return UiText("Невідома дія. Використовуйте /monitor status|start|stop|restart",
+                          "Unknown action. Use /monitor status|start|stop|restart");
+        }
+
+        private bool TryResolveMonitorPath(out string monitorExePath)
+        {
+            var candidates = new List<string>
+            {
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Monitor", "RDPMonitor.exe"),
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "Monitor", "RDPMonitor.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "RDPSecurityService", "Monitor", "RDPMonitor.exe")
+            };
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                string candidate = Path.GetFullPath(candidates[i]);
+                if (File.Exists(candidate))
+                {
+                    monitorExePath = candidate;
+                    return true;
+                }
+            }
+
+            monitorExePath = string.Empty;
+            return false;
+        }
+
+        private sealed class TelegramUnblockResult
+        {
+            public bool WasUnblocked;
+            public string Message = string.Empty;
+        }
+
         private string UnblockIpFromTelegram(string ipAddress)
         {
+            return UnblockIpFromTelegramCore(ipAddress).Message;
+        }
+
+        private TelegramUnblockResult UnblockIpFromTelegramCore(string ipAddress)
+        {
             if (!IPAddress.TryParse(ipAddress, out IPAddress parsedIp))
-                return UiText($"Некоректний IP: {ipAddress}", $"Invalid IP: {ipAddress}");
+            {
+                return new TelegramUnblockResult
+                {
+                    WasUnblocked = false,
+                    Message = UiText($"Некоректний IP: {ipAddress}", $"Invalid IP: {ipAddress}")
+                };
+            }
 
             string ip = parsedIp.ToString();
-            int removedLines = 0;
+            int removedDirectLines = 0;
+            int removedSubnetLines = 0;
 
             try
             {
@@ -1917,11 +2788,23 @@ class Program
                         foreach (string line in File.ReadAllLines(blockListLogPath))
                         {
                             string target = ExtractBlockedTargetFromLine(line);
-                            if (!string.IsNullOrWhiteSpace(target)
-                                && !target.Contains("/", StringComparison.Ordinal)
+                            if (string.IsNullOrWhiteSpace(target))
+                            {
+                                keptLines.Add(line);
+                                continue;
+                            }
+
+                            if (!target.Contains("/", StringComparison.Ordinal)
                                 && target.Equals(ip, StringComparison.OrdinalIgnoreCase))
                             {
-                                removedLines++;
+                                removedDirectLines++;
+                                continue;
+                            }
+
+                            if (target.Contains("/", StringComparison.Ordinal)
+                                && IsIpv4InSubnet24(ip, target))
+                            {
+                                removedSubnetLines++;
                                 continue;
                             }
 
@@ -1938,25 +2821,49 @@ class Program
                     failedAttempts.Remove(ip);
                 }
 
-                RequestFirewallSync(force: true);
+                // For unblock we keep log as source of truth and run firewall sync in parallel.
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        RequestFirewallSync(force: true);
+                    }
+                    catch (Exception syncEx)
+                    {
+                        WriteLog($"Telegram unblock firewall sync error for {ip}: {syncEx.Message}");
+                    }
+                });
 
                 bool subnetBlocked = TryGetActiveSubnetBlock(ip, out string subnet, out DateTime subnetUntilLocal);
-                if (removedLines > 0)
+                int totalRemoved = removedDirectLines + removedSubnetLines;
+                if (totalRemoved > 0)
                 {
-                    WriteLog($"Telegram manual unblock: {ip}, removed_entries={removedLines}");
-                    return subnetBlocked
-                        ? UiText($"Пряме блокування IP {ip} знято. Блокування підмережі ще активне: {subnet} до {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}", $"Unblocked direct IP entries for {ip}. Subnet block still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}")
-                        : UiText($"IP {ip} розблоковано. Видалено {removedLines} запис(ів).", $"Unblocked {ip}. Removed {removedLines} direct block entries.");
+                    WriteLog($"Telegram manual unblock: {ip}, removed_direct={removedDirectLines}, removed_subnet={removedSubnetLines}");
+                    return new TelegramUnblockResult
+                    {
+                        WasUnblocked = true,
+                        Message = subnetBlocked
+                            ? UiText($"Пряме блокування IP {ip} знято. Блокування підмережі ще активне: {subnet} до {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}", $"Unblocked direct IP entries for {ip}. Subnet block still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}")
+                            : UiText($"IP {ip} розблоковано. Видалено записів: прямих={removedDirectLines}, підмереж={removedSubnetLines}.", $"Unblocked {ip}. Removed entries: direct={removedDirectLines}, subnet={removedSubnetLines}.")
+                    };
                 }
 
-                return subnetBlocked
-                    ? UiText($"Прямого блокування для {ip} не знайдено. Блокування підмережі ще активне: {subnet} до {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}", $"No direct IP block found for {ip}. Subnet block is still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}")
-                    : UiText($"Прямого блокування для {ip} не знайдено.", $"No direct IP block found for {ip}.");
+                return new TelegramUnblockResult
+                {
+                    WasUnblocked = false,
+                    Message = subnetBlocked
+                        ? UiText($"Прямого блокування для {ip} не знайдено. Блокування підмережі ще активне: {subnet} до {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}", $"No direct IP block found for {ip}. Subnet block is still active: {subnet} until {subnetUntilLocal:yyyy-MM-dd HH:mm:ss}")
+                        : UiText($"Прямого блокування для {ip} не знайдено.", $"No direct IP block found for {ip}.")
+                };
             }
             catch (Exception ex)
             {
                 WriteLog($"Telegram unblock error for {ip}: {ex.Message}");
-                return UiText($"Не вдалося розблокувати {ip}: {ex.Message}", $"Failed to unblock {ip}: {ex.Message}");
+                return new TelegramUnblockResult
+                {
+                    WasUnblocked = false,
+                    Message = UiText($"Не вдалося розблокувати {ip}: {ex.Message}", $"Failed to unblock {ip}: {ex.Message}")
+                };
             }
         }
 
@@ -2161,12 +3068,9 @@ class Program
             if (probeCount < TCP_PROBE_THRESHOLD)
                 return;
 
-            var level = GetScanBlockLevel();
-            WriteLog($"SCAN threshold reached: ip={remoteIp}, probes={probeCount}, block={level.BlockMinutes}m");
-            if (!ShouldApplyBan(remoteIp, probeCount, level, nowLocal))
-                return;
-
-            ApplyIpBan(remoteIp, nowLocal, probeCount, level.BlockMinutes, level.Attempts, "tcp-probe-threshold");
+            // TCP probe monitor is used only for 4625 correlation with configured port activity.
+            // Do not ban directly from probe count to avoid premature blocks before login threshold is reached.
+            WriteLog($"SCAN threshold reached: ip={remoteIp}, probes={probeCount} (correlation-only, no direct ban)");
         }
 
         private void CleanupTcpProbeState(DateTime nowLocal)
@@ -2531,6 +3435,44 @@ class Program
             return s;
         }
 
+        private bool RegisterFailedUserAndCheckIpAbuse(string sourceIp, string targetUser, DateTime nowLocal)
+        {
+            string normalizedIp = NormalizeIpCandidate(sourceIp);
+            if (string.IsNullOrWhiteSpace(normalizedIp))
+                return false;
+
+            string userKey = NormalizeUserCandidate(targetUser);
+            if (string.IsNullOrWhiteSpace(userKey))
+                return false;
+
+            int windowMinutes = Math.Max(1, ipAbuseWindowMinutes);
+            int usersThreshold = Math.Max(2, ipAbuseDistinctUsersThreshold);
+
+            int distinctUsers;
+            lock (failedUsersByIpLock)
+            {
+                if (!failedUsersByIp.TryGetValue(normalizedIp, out IpFailedUsersState? state))
+                {
+                    state = new IpFailedUsersState();
+                    failedUsersByIp[normalizedIp] = state;
+                }
+
+                DateTime cutoff = nowLocal.AddMinutes(-windowMinutes);
+                var staleUsers = state.Users
+                    .Where(p => p.Value < cutoff)
+                    .Select(p => p.Key)
+                    .ToList();
+
+                for (int i = 0; i < staleUsers.Count; i++)
+                    state.Users.Remove(staleUsers[i]);
+
+                state.Users[userKey] = nowLocal;
+                distinctUsers = state.Users.Count;
+            }
+
+            return distinctUsers >= usersThreshold;
+        }
+
         private bool TryApplySprayBan(string targetUser, string sourceIp, DateTime eventTimeLocal, DateTime nowLocal)
         {
             var anti = antiBruteConfig;
@@ -2583,12 +3525,33 @@ class Program
             return true;
         }
 
-        private void ApplyIpBan(string ipAddress, DateTime eventTimeLocal, int attemptCount, int requestedBlockMinutes, int appliedAttempts, string reason)
+        private void ApplyIpBan(string ipAddress, DateTime eventTimeLocal, int attemptCount, int requestedBlockMinutes, int appliedAttempts, string reason, string? attackingUser = null)
         {
             if (IsLocalOrPrivateIp(ipAddress))
             {
                 WriteLog($"Skipped ban for protected local/private IP: {ipAddress}");
                 return;
+            }
+
+            // Skip ban only if the attacking user is the same as the currently active session user from this IP.
+            // If a different user is being brute-forced from an active-session IP — still block it.
+            if (HasActiveRdpSessionFromIp(ipAddress))
+            {
+                string? activeUser = null;
+                lock (activeLogonsByIpLock)
+                {
+                    activeLogonsByIp.TryGetValue(NormalizeIpCandidate(ipAddress) ?? ipAddress, out activeUser);
+                }
+                bool sameUser = !string.IsNullOrWhiteSpace(attackingUser) &&
+                                !string.IsNullOrWhiteSpace(activeUser) &&
+                                string.Equals(activeUser, attackingUser, StringComparison.OrdinalIgnoreCase);
+                if (sameUser)
+                {
+                    WriteLog($"Skipped ban for active RDP session IP: {ipAddress}, same user '{activeUser}' (reason={reason})");
+                    return;
+                }
+                // Different user attacking from a shared/NAT IP with active session — proceed with ban
+                WriteLog($"Proceeding with ban for IP {ipAddress}: active user='{activeUser}' but attacking user='{attackingUser}' (reason={reason})");
             }
 
             DateTime nowLocal = DateTime.Now;
@@ -2602,6 +3565,10 @@ class Program
                 AppliedAttempts = appliedAttempts,
                 UntilLocal = until
             };
+
+            // Note: Do NOT reset failedAttempts[ipAddress] here.
+            // Resetting prevents escalation to higher ban levels (e.g., 3 attempts -> 10 attempts for stronger ban).
+            // The counter must persist to allow proper level progression during the ban period.
 
             if (!string.IsNullOrWhiteSpace(reason))
                 WriteLog($"Ban applied ({reason}): {ipAddress} for {effectiveBlockMinutes}m (until {until:yyyy-MM-dd HH:mm:ss})");
@@ -2696,6 +3663,12 @@ class Program
                 return;
             }
 
+            if (SubnetContainsActiveRdpSessionIp(subnet))
+            {
+                WriteLog($"Subnet escalation skipped due to active RDP session in subnet: {subnet}");
+                return;
+            }
+
             DateTime until = nowLocal.AddMinutes(subnetBlockMinutes);
             WriteSubnetBlockLog(subnet, eventTimeLocal, recentUniqueIps, subnetBlockMinutes, until);
 
@@ -2778,7 +3751,7 @@ class Program
             if (ip.AddressFamily != AddressFamily.InterNetwork)
                 return false;
 
-            if (!TryParseSubnet24(subnetCidr, out byte[] netBytes))
+            if (!TryParseSubnet24(subnetCidr, out byte[]? netBytes) || netBytes == null)
                 return false;
 
             byte[] bytes = ip.GetAddressBytes();
@@ -2794,6 +3767,55 @@ class Program
             {
                 if (IsIpv4InSubnet24(ip, subnetCidr))
                     return true;
+            }
+
+            return false;
+        }
+
+        private bool HasActiveRdpSessionFromIp(string ipAddress)
+        {
+            if (string.IsNullOrWhiteSpace(ipAddress))
+                return false;
+
+            try
+            {
+                var sessions = GetActiveUserSessions();
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    string clientIp = sessions[i].ClientIp?.Trim() ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(clientIp)
+                        && AreSameIpAddress(clientIp, ipAddress))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Active session IP check error: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        private bool SubnetContainsActiveRdpSessionIp(string subnetCidr)
+        {
+            if (string.IsNullOrWhiteSpace(subnetCidr))
+                return false;
+
+            try
+            {
+                var sessions = GetActiveUserSessions();
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    string clientIp = sessions[i].ClientIp?.Trim() ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(clientIp) && IsIpv4InSubnet24(clientIp, subnetCidr))
+                        return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Active session subnet check error: {ex.Message}");
             }
 
             return false;
@@ -3140,6 +4162,18 @@ class Program
                                 if (now > untilLocal)
                                 {
                                     expiredPruned = true;
+                                    // Also remove from in-memory bans/subnetBans
+                                    string expiredTarget = ExtractBlockedTargetFromLine(line);
+                                    if (!string.IsNullOrWhiteSpace(expiredTarget))
+                                    {
+                                        lock (bansLock)
+                                        {
+                                            if (!expiredTarget.Contains("/"))
+                                                bans.Remove(expiredTarget);
+                                            else
+                                                subnetBans.Remove(expiredTarget);
+                                        }
+                                    }
                                     continue;
                                 }
                             }
@@ -3148,6 +4182,18 @@ class Program
                                 if (now - ts > TimeSpan.FromMinutes(defaultTtlMinutes))
                                 {
                                     expiredPruned = true;
+                                    // Also remove from in-memory bans/subnetBans
+                                    string expiredTarget = ExtractBlockedTargetFromLine(line);
+                                    if (!string.IsNullOrWhiteSpace(expiredTarget))
+                                    {
+                                        lock (bansLock)
+                                        {
+                                            if (!expiredTarget.Contains("/"))
+                                                bans.Remove(expiredTarget);
+                                            else
+                                                subnetBans.Remove(expiredTarget);
+                                        }
+                                    }
                                     continue; // expired block entry
                                 }
                             }
@@ -3188,10 +4234,12 @@ class Program
 
                 if (string.IsNullOrWhiteSpace(remoteIPList))
                 {
-                    // Delete the rule if it exists
+                    // Keep a single stable rule and clear it to a safe placeholder target.
                     try
                     {
-                        // Check if rule exists first
+                        const string emptyRemoteTarget = "255.255.255.255";
+                        bool ruleExists = false;
+
                         var checkPsi = new ProcessStartInfo
                         {
                             FileName = "netsh.exe",
@@ -3203,22 +4251,21 @@ class Program
                         };
                         using (var checkProc = Process.Start(checkPsi))
                         {
-                            if (checkProc == null)
-                                return;
-
-                            checkProc.WaitForExit(3000);
-                            if (checkProc.ExitCode != 0)
+                            if (checkProc != null)
                             {
-                                // Rule doesn't exist, nothing to do
-                                return;
+                                checkProc.WaitForExit(3000);
+                                ruleExists = checkProc.ExitCode == 0;
                             }
                         }
 
-                        // Rule exists, delete it
+                        string netshVerb = ruleExists
+                            ? $"advfirewall firewall set rule name=\"RDP_BLOCK_ALL\" new remoteip=\"{emptyRemoteTarget}\""
+                            : $"advfirewall firewall add rule name=\"RDP_BLOCK_ALL\" dir=in action=block protocol=any remoteip=\"{emptyRemoteTarget}\" profile=any enable=yes";
+
                         var psi = new ProcessStartInfo
                         {
                             FileName = "netsh.exe",
-                            Arguments = "advfirewall firewall delete rule name=\"RDP_BLOCK_ALL\"",
+                            Arguments = netshVerb,
                             UseShellExecute = false,
                             CreateNoWindow = true,
                             RedirectStandardOutput = true,
@@ -3231,14 +4278,12 @@ class Program
 
                             p.WaitForExit(5000);
                             if (p.ExitCode == 0)
-                            {
-                                WriteLog("RDP_BLOCK_ALL deleted (no blocked IPs)");
-                            }
+                                WriteLog($"RDP_BLOCK_ALL {(ruleExists ? "cleared" : "created")}: remoteip={emptyRemoteTarget}");
                         }
                     }
                     catch
                     {
-                        // Ignore errors - rule may already be deleted
+                        // Ignore sync errors here; next sync will retry
                     }
                     return;
                 }
@@ -3274,6 +4319,7 @@ class Program
                         return;
                     }
 
+                    // Try to update existing rule first (set). If rule doesn't exist, add it.
                     bool ruleExists = false;
                     try
                     {
@@ -3288,77 +4334,42 @@ class Program
                         };
                         using (var p = Process.Start(checkPsi))
                         {
-                            if (p == null)
-                                ruleExists = false;
-                            else
+                            if (p != null)
                             {
-                            string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                            p.WaitForExit(5000);
-                            ruleExists = p.ExitCode == 0 && (
-                                output.IndexOf("Rule Name", StringComparison.OrdinalIgnoreCase) >= 0
-                                || output.IndexOf("Имя правила", StringComparison.OrdinalIgnoreCase) >= 0);
+                                p.WaitForExit(5000);
+                                ruleExists = (p.ExitCode == 0);
                             }
                         }
                     }
                     catch { }
 
-                    // Prefer "set rule" (doesn't delete existing protection if it fails).
-                    if (ruleExists)
-                    {
-                        var setPsi = new ProcessStartInfo
-                        {
-                            FileName = "netsh.exe",
-                            Arguments = $"advfirewall firewall set rule name=\"RDP_BLOCK_ALL\" new enable=yes profile=any dir=in action=block protocol=any localport=any remoteip=\"{remoteIpList}\"",
-                            UseShellExecute = false,
-                            CreateNoWindow = true,
-                            RedirectStandardOutput = true,
-                            RedirectStandardError = true
-                        };
-                        using (var p = Process.Start(setPsi))
-                        {
-                            if (p == null)
-                            {
-                                WriteLog("RDP_BLOCK_ALL netsh set failed: process start returned null");
-                                goto TryAddFirewallRule;
-                            }
+                    string netshVerb = ruleExists
+                        ? $"advfirewall firewall set rule name=\"RDP_BLOCK_ALL\" new remoteip=\"{remoteIpList}\""
+                        : $"advfirewall firewall add rule name=\"RDP_BLOCK_ALL\" dir=in action=block protocol=any remoteip=\"{remoteIpList}\" profile=any enable=yes";
 
-                            string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                            p.WaitForExit(15000);
-                            if (p.ExitCode == 0 || output.IndexOf("Ok", StringComparison.OrdinalIgnoreCase) >= 0 || output.IndexOf("ОК", StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                WriteLog($"RDP_BLOCK_ALL updated via netsh set: count={remoteTargets.Count}, chars={remoteIpList.Length}");
-                                return;
-                            }
-
-                            WriteLog($"RDP_BLOCK_ALL netsh set failed (exit {p.ExitCode}): {output}");
-                        }
-                    }
-
-                    // If rule doesn't exist (or set failed), try "add rule".
-                TryAddFirewallRule:
-                    var addPsi = new ProcessStartInfo
+                    var updatePsi = new ProcessStartInfo
                     {
                         FileName = "netsh.exe",
-                        Arguments = $"advfirewall firewall add rule name=\"RDP_BLOCK_ALL\" dir=in action=block protocol=any localport=any remoteip=\"{remoteIpList}\" profile=any enable=yes",
+                        Arguments = netshVerb,
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true
                     };
-                    using (var p = Process.Start(addPsi))
+                    using (var p = Process.Start(updatePsi))
                     {
                         if (p == null)
                         {
-                            WriteLog("RDP_BLOCK_ALL netsh add failed: process start returned null");
+                            WriteLog("RDP_BLOCK_ALL netsh failed: process start returned null");
                             return;
                         }
 
                         string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
                         p.WaitForExit(15000);
                         if (p.ExitCode == 0 || output.IndexOf("Ok", StringComparison.OrdinalIgnoreCase) >= 0 || output.IndexOf("ОК", StringComparison.OrdinalIgnoreCase) >= 0)
-                            WriteLog($"RDP_BLOCK_ALL upserted via netsh add: count={remoteTargets.Count}, chars={remoteIpList.Length}");
+                            WriteLog($"RDP_BLOCK_ALL {(ruleExists ? "updated" : "created")}: count={remoteTargets.Count}, chars={remoteIpList.Length}");
                         else
-                            WriteLog($"RDP_BLOCK_ALL netsh add failed (exit {p.ExitCode}, chars={remoteIpList.Length}): {output}");
+                            WriteLog($"RDP_BLOCK_ALL netsh failed (exit {p.ExitCode}, chars={remoteIpList.Length}): {output}");
                     }
                 }
                 catch (Exception ex)
@@ -3610,9 +4621,18 @@ class Program
                         shouldRewriteConfig = true;
                     }
 
+                    cfg.Telegram.LimitedPhones ??= new List<string>();
+
                     if (cfg.AntiBrute == null)
                     {
                         cfg.AntiBrute = AntiBruteConfig.CreateDefault();
+                        shouldRewriteConfig = true;
+                    }
+
+                    if (cfg.AntiBrute?.IpAbuse == null)
+                    {
+                        cfg.AntiBrute ??= AntiBruteConfig.CreateDefault();
+                        cfg.AntiBrute.IpAbuse = IpAbuseConfig.CreateDefault();
                         shouldRewriteConfig = true;
                     }
 
@@ -3649,6 +4669,8 @@ class Program
 
                     // Load anti-brute configuration
                     antiBruteConfig = NormalizeAntiBruteConfig(cfg.AntiBrute);
+                    ipAbuseWindowMinutes = Math.Max(1, antiBruteConfig.IpAbuse.WindowMinutes);
+                    ipAbuseDistinctUsersThreshold = Math.Max(2, antiBruteConfig.IpAbuse.DistinctUsersThreshold);
 
                     if (shouldRewriteConfig)
                         File.WriteAllText(configPath, JsonSerializer.Serialize(cfg, ServiceConfigJson.Options));
@@ -3682,6 +4704,10 @@ class Program
             cfg.Subnet.WindowMinutes = Math.Max(1, cfg.Subnet.WindowMinutes);
             cfg.Subnet.UniqueIpsThreshold = Math.Max(2, cfg.Subnet.UniqueIpsThreshold);
             cfg.Subnet.BlockMinutes = Math.Max(1, cfg.Subnet.BlockMinutes);
+
+            cfg.IpAbuse ??= IpAbuseConfig.CreateDefault();
+            cfg.IpAbuse.WindowMinutes = Math.Max(1, cfg.IpAbuse.WindowMinutes);
+            cfg.IpAbuse.DistinctUsersThreshold = Math.Max(2, cfg.IpAbuse.DistinctUsersThreshold);
 
             return cfg;
         }
@@ -3791,6 +4817,9 @@ class Program
         [JsonPropertyName("subnet")]
         public SubnetConfig Subnet { get; set; } = SubnetConfig.CreateDefault();
 
+        [JsonPropertyName("ipAbuse")]
+        public IpAbuseConfig IpAbuse { get; set; } = IpAbuseConfig.CreateDefault();
+
         public static AntiBruteConfig CreateDefault()
         {
             return new AntiBruteConfig
@@ -3798,7 +4827,26 @@ class Program
                 Enabled = true,
                 Spray = SprayConfig.CreateDefault(),
                 Recurrence = RecurrenceConfig.CreateDefault(),
-                Subnet = SubnetConfig.CreateDefault()
+                Subnet = SubnetConfig.CreateDefault(),
+                IpAbuse = IpAbuseConfig.CreateDefault()
+            };
+        }
+    }
+
+    public class IpAbuseConfig
+    {
+        [JsonPropertyName("windowMinutes")]
+        public int WindowMinutes { get; set; } = 10;
+
+        [JsonPropertyName("distinctUsersThreshold")]
+        public int DistinctUsersThreshold { get; set; } = 3;
+
+        public static IpAbuseConfig CreateDefault()
+        {
+            return new IpAbuseConfig
+            {
+                WindowMinutes = 10,
+                DistinctUsersThreshold = 3
             };
         }
     }
@@ -3903,6 +4951,9 @@ class Program
 
         [JsonPropertyName("messageTemplates")]
         public Dictionary<string, string> MessageTemplates { get; set; } = new Dictionary<string, string>();
+
+        [JsonPropertyName("limitedPhones")]
+        public List<string> LimitedPhones { get; set; } = new List<string>();
     }
 
     public class BlockLevel

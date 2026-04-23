@@ -15,6 +15,24 @@
 - ✅ **Automated Installer** - PowerShell script for easy deployment
 - ✅ **Documentation** - Complete installation and usage guides
 
+## 🧪 Test Focus (for external testers)
+
+Please focus on these scenarios:
+
+- **Install flow**: unzip package, run `run-public-install.bat` as Administrator, complete installation.
+- **SmartScreen handling**: if warning appears, click "More info" -> "Run anyway" and continue.
+- **Service health**: verify `RDPSecurityService` is running after install.
+- **Firewall model**: confirm single rule `RDP_BLOCK_ALL` is used, and blocked IPs are updated in its `RemoteIP` list.
+- **Brute-force behavior**: repeated failed logons from one IP lead to ban by configured levels.
+- **Monitor behavior**: logs update in real time, blocked list is visible, manual unblock works.
+- **No private tools in public zip**: package must not contain internal report-reader tools.
+
+Quick check command:
+
+```powershell
+netsh advfirewall firewall show rule name="RDP_BLOCK_ALL"
+```
+
 ## 🆕 New Features (v2026-03-06)
 
 ### Security & Performance
