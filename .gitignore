@@ -23,3 +23,10 @@ Thumbs.db
 *.log
 *.csv
 *.backup
+
+# Release artifacts (generated)
+release/*.zip
+release/*.msi
+release/RDP-Security-Suite-ZIP/
+release/RDP-Security-Suite-ZIP-PUBLIC/
+release/_archive_*/
