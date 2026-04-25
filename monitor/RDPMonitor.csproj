@@ -13,7 +13,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.4.1" />
-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +23,10 @@
     <Content Include="app.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="SupportReportReader\**\*.cs" />
   </ItemGroup>
 
 </Project>

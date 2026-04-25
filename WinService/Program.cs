@@ -25,25 +25,50 @@ using System.Runtime.InteropServices;
 class Program
 {
 #pragma warning disable CA1416
+    public static void WriteBootstrapLog(string message)
+    {
+        try
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RDPSecurityService");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "bootstrap.log");
+            string entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}";
+            File.AppendAllText(path, entry + Environment.NewLine, Encoding.UTF8);
+        }
+        catch
+        {
+        }
+    }
+
     static void Main(string[] args)
         {
-            if (args.Length > 0)
+            try
             {
-                string command = args[0].ToLower();
-                if (command == "install")
-                {
-                    InstallService();
-                    return;
-                }
-                else if (command == "uninstall")
-                {
-                    UninstallService();
-                    return;
-                }
-            }
+                WriteBootstrapLog("Main started.");
 
-            ServiceBase[] servicesToRun = new ServiceBase[] { new RDPSecurityService() };
-            ServiceBase.Run(servicesToRun);
+                if (args.Length > 0)
+                {
+                    string command = args[0].ToLower();
+                    if (command == "install")
+                    {
+                        InstallService();
+                        return;
+                    }
+                    else if (command == "uninstall")
+                    {
+                        UninstallService();
+                        return;
+                    }
+                }
+
+                ServiceBase[] servicesToRun = new ServiceBase[] { new RDPSecurityService() };
+                ServiceBase.Run(servicesToRun);
+            }
+            catch (Exception ex)
+            {
+                WriteBootstrapLog($"Fatal Main error: {ex}");
+                throw;
+            }
         }
 
         static void InstallService()
@@ -479,6 +504,7 @@ class Program
         private const string LimitedSelfUnbanFixedIp = "46.229.58.64";
         private HttpListener? hereProbeListener;
         private Thread? hereProbeThread;
+        private int diagnosticsHandlersInitialized = 0;
 
         private sealed class IpFailedUsersState
         {
@@ -494,7 +520,7 @@ class Program
             this.ServiceName = "RDPSecurityService";
             CanStop = true;
             CanPauseAndContinue = false;
-            AutoLog = true;
+            AutoLog = false;
         }
 
         protected override void OnStart(string[] args)
@@ -512,9 +538,42 @@ class Program
             configPath = Path.Combine(logDirectory, "config.json");
 
             WriteLog("Service start requested by SCM.");
+            Program.WriteBootstrapLog("OnStart entered.");
+
+            EnsureCrashDiagnosticsHooks();
 
             // Keep OnStart fast to avoid SCM timeout (1053) on slower or heavily restricted hosts.
             _ = Task.Run(InitializeServiceRuntime);
+        }
+
+        private void EnsureCrashDiagnosticsHooks()
+        {
+            if (Interlocked.Exchange(ref diagnosticsHandlersInitialized, 1) == 1)
+                return;
+
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            {
+                string details = e.ExceptionObject?.ToString() ?? "(null)";
+                bool terminating = e.IsTerminating;
+                try { WriteLog($"Unhandled exception (terminating={terminating}): {details}"); } catch { }
+                Program.WriteBootstrapLog($"Unhandled exception (terminating={terminating}): {details}");
+            };
+
+            TaskScheduler.UnobservedTaskException += (_, e) =>
+            {
+                try { WriteLog($"Unobserved task exception: {e.Exception}"); } catch { }
+                Program.WriteBootstrapLog($"Unobserved task exception: {e.Exception}");
+                e.SetObserved();
+            };
+
+            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            {
+                try { WriteLog("ProcessExit fired."); } catch { }
+                Program.WriteBootstrapLog("ProcessExit fired.");
+            };
+
+            WriteLog("Crash diagnostics hooks initialized.");
+            Program.WriteBootstrapLog("Crash diagnostics hooks initialized.");
         }
 
         private void InitializeServiceRuntime()

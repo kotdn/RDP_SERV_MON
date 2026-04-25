@@ -51,6 +51,7 @@ namespace RDPMonitor
             ["LABEL_BLOCK_STATUS_PLACEHOLDER"] = new Dictionary<string, string> { ["UA"] = "Статус з'явиться тут...", ["EN"] = "Status will appear here..." },
 
             ["BTN_UNBLOCK_IP"] = new Dictionary<string, string> { ["UA"] = "Розблокувати IP", ["EN"] = "Unlock IP" },
+            ["BTN_CLEAR_ALL_BLOCKS"] = new Dictionary<string, string> { ["UA"] = "Очистити всі блокування", ["EN"] = "Clear all blocks" },
             ["BTN_ADD_WITH_PLUS"] = new Dictionary<string, string> { ["UA"] = "+ Додати", ["EN"] = "+ Add" },
             ["BTN_REMOVE_WITH_X"] = new Dictionary<string, string> { ["UA"] = "✕ Видалити", ["EN"] = "✕ Remove" },
             ["BTN_BLOCK_THIS_IP"] = new Dictionary<string, string> { ["UA"] = "ЗАБЛОКУВАТИ ЦЕЙ IP", ["EN"] = "BLOCK THIS IP" },
@@ -85,6 +86,31 @@ namespace RDPMonitor
             ["ANTI_BRUTE_LOOKBACK_H"] = new Dictionary<string, string> { ["UA"] = "Історія (год):", ["EN"] = "Lookback (hours):" },
             ["ANTI_BRUTE_STEP"] = new Dictionary<string, string> { ["UA"] = "Step multiplier:", ["EN"] = "Step multiplier:" },
             ["ANTI_BRUTE_MAX"] = new Dictionary<string, string> { ["UA"] = "Max multiplier:", ["EN"] = "Max multiplier:" },
+            ["ANTI_BRUTE_HELP_OVERVIEW"] = new Dictionary<string, string>
+            {
+                ["UA"] = "Anti-Brute аналізує невдалі входи та застосовує додаткові правила блокування поверх базових рівнів.",
+                ["EN"] = "Anti-Brute analyzes failed logons and applies additional blocking rules on top of base levels."
+            },
+            ["ANTI_BRUTE_HELP_SPRAY"] = new Dictionary<string, string>
+            {
+                ["UA"] = "Spray-детект: якщо за вікно часу один логін атакують з багатьох різних IP, джерела блокуються на вказаний час.",
+                ["EN"] = "Spray detection: if one username is attacked from many different IPs within the time window, source IPs are blocked for the configured duration."
+            },
+            ["ANTI_BRUTE_HELP_IP_ABUSE"] = new Dictionary<string, string>
+            {
+                ["UA"] = "IP abuse: якщо один IP перебирає багато різних логінів за вікно часу, IP блокується як підозрілий.",
+                ["EN"] = "IP abuse: if one IP attempts many different usernames within the time window, that IP is blocked as suspicious."
+            },
+            ["ANTI_BRUTE_HELP_RECURRENCE"] = new Dictionary<string, string>
+            {
+                ["UA"] = "Рецидив: для IP з повторними атаками час бану множиться (step), але не перевищує max multiplier.",
+                ["EN"] = "Recurrence: for repeating offender IPs, ban duration is multiplied by step but capped by max multiplier."
+            },
+            ["ANTI_BRUTE_HELP_SUBNET"] = new Dictionary<string, string>
+            {
+                ["UA"] = "Ескалація /24: якщо в одній /24 підмережі багато різних атакуючих IP, може застосовуватися блокування всієї підмережі.",
+                ["EN"] = "Subnet /24 escalation: if many different attacking IPs appear within one /24 subnet, the whole subnet can be blocked."
+            },
 
             ["IFACE_HEADER"] = new Dictionary<string, string> { ["UA"] = "Інтерфейси прослуховування RDP", ["EN"] = "RDP Listening Interfaces" },
             ["IFACE_HINT"] = new Dictionary<string, string> { ["UA"] = "Відмітьте інтерфейси, для яких застосовується моніторинг порту.", ["EN"] = "Select interfaces where port monitoring will be applied." },

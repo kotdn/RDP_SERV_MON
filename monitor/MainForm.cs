@@ -49,17 +49,24 @@ namespace RDPMonitor
         
         // Tab: Banned IPs  
         private ListBox lstBannedIPs;
+        private Label lblBannedTitle;
+        private Label lblBannedUnblock;
         private Button btnUnblockIP;
         private Button btnClearAllBlocks;
         private TextBox txtIPToUnblock;
         
         // Tab: White List
         private ListBox lstWhiteList;
+        private Label lblWhiteTitle;
+        private Label lblWhiteAdd;
         private TextBox txtNewWhiteIP;
         private Button btnAddWhiteIP;
         private Button btnRemoveWhiteIP;
         
         // Tab: Manual Block
+        private Label lblManualTitle;
+        private Label lblManualIp;
+        private Label lblManualDuration;
         private TextBox txtIPToBlock;
         private TextBox txtBlockMinutes;
         private Button btnManualBlock;
@@ -67,6 +74,9 @@ namespace RDPMonitor
 
         // Tab: Settings
         private TextBox txtPort;
+        private Label lblSettingsServiceConfigTitle;
+        private Label lblSettingsRdpPort;
+        private Label lblSettingsBlockLevels;
         private DataGridView dgvBlockLevels;
         private Button btnSaveConfig;
         private Button btnAddLevel;
@@ -90,6 +100,41 @@ namespace RDPMonitor
         private TextBox txtSubnetWindowMinutes;
         private TextBox txtSubnetUniqueIpsThreshold;
         private TextBox txtSubnetBlockMinutes;
+        private Label lblAntiBruteSectionTitle;
+        private Label lblSprayTitle;
+        private Label lblIpAbuseTitle;
+        private Label lblRecurrenceTitle;
+        private Label lblSubnetTitle;
+        private Label lblAntiBruteSprayWindow;
+        private Label lblAntiBruteSprayThreshold;
+        private Label lblAntiBruteSprayBlock;
+        private Label lblAntiBruteIpAbuseWindow;
+        private Label lblAntiBruteIpAbuseUsers;
+        private Label lblAntiBruteRecurrenceLookback;
+        private Label lblAntiBruteRecurrenceStep;
+        private Label lblAntiBruteRecurrenceMax;
+        private Label lblAntiBruteSubnetWindow;
+        private Label lblAntiBruteSubnetThreshold;
+        private Label lblAntiBruteSubnetBlock;
+        private ToolTip antiBruteHelpToolTip;
+        private Label lblHelpAntiBrute;
+        private Label lblHelpSpray;
+        private Label lblHelpIpAbuse;
+        private Label lblHelpRecurrence;
+        private Label lblHelpSubnet;
+        private Label lblInterfacesTitle;
+        private Label lblAlertsHeader;
+        private Label lblAlertsBotToken;
+        private Label lblAlertsChatId;
+        private Label lblAlertsTemplatesHeader;
+        private Label lblAlertsPlaceholders;
+        private readonly List<Label> lblAlertsLevelCaptions = new List<Label>();
+        private Label lblAlertsDefaultTemplate;
+        private Label lblAlertsHelpTitle;
+        private readonly List<Label> lblAlertsHelpSteps = new List<Label>();
+        private Label lblMessageSettingsHeader;
+        private Label lblMessageSettingsMonitorSection;
+        private Label lblMessageSettingsServiceSection;
         
         // Tab: Telegram/Alerts
         private CheckBox chkTelegramEnabled;
@@ -312,7 +357,7 @@ namespace RDPMonitor
                 Location = new Point(10, 35),
                 Size = new Size(450, 75),
                 Font = new Font("Consolas", 8),
-                Text = "Loading...",
+                Text = Lang.Get("LOADING"),
                 AutoSize = false,
                 BackColor = Color.FromArgb(250, 250, 250)
             };
@@ -480,7 +525,7 @@ namespace RDPMonitor
             pnl.HorizontalScroll.Enabled = false;
             pnl.HorizontalScroll.Visible = false;
 
-            var lbl = new Label
+            lblBannedTitle = new Label
             {
                 Text = Lang.Get("SECTION_BLOCKED_IPS_FIREWALL"),
                 AutoSize = true,
@@ -488,7 +533,7 @@ namespace RDPMonitor
                 MaximumSize = new Size(950, 0),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lbl);
+            pnl.Controls.Add(lblBannedTitle);
 
             lstBannedIPs = new ListBox
             {
@@ -501,14 +546,14 @@ namespace RDPMonitor
             lstBannedIPs.MouseDown += LstBannedIPs_MouseDown;
             pnl.Controls.Add(lstBannedIPs);
 
-            var lblUnblock = new Label
+            lblBannedUnblock = new Label
             {
                 Text = Lang.Get("SECTION_IP_TO_UNBLOCK"),
                 Location = new Point(10, 385),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9)
             };
-            pnl.Controls.Add(lblUnblock);
+            pnl.Controls.Add(lblBannedUnblock);
 
             txtIPToUnblock = new TextBox
             {
@@ -536,7 +581,7 @@ namespace RDPMonitor
 
             btnClearAllBlocks = new Button
             {
-                Text = "🧹 Очистить все блокировки",
+                Text = "🧹 " + Lang.Get("BTN_CLEAR_ALL_BLOCKS"),
                 Location = new Point(390, 410),
                 Size = new Size(220, 25),
                 BackColor = Color.FromArgb(198, 40, 40),
@@ -557,7 +602,7 @@ namespace RDPMonitor
             pnl.HorizontalScroll.Enabled = false;
             pnl.HorizontalScroll.Visible = false;
 
-            var lbl = new Label
+            lblWhiteTitle = new Label
             {
                 Text = Lang.Get("SECTION_WHITE_LIST"),
                 AutoSize = true,
@@ -565,7 +610,7 @@ namespace RDPMonitor
                 MaximumSize = new Size(950, 0),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lbl);
+            pnl.Controls.Add(lblWhiteTitle);
 
             lstWhiteList = new ListBox
             {
@@ -594,14 +639,14 @@ namespace RDPMonitor
             
             pnl.Controls.Add(lstWhiteList);
 
-            var lblAdd = new Label
+            lblWhiteAdd = new Label
             {
                 Text = Lang.Get("SECTION_ADD_WHITELIST_IP"),
                 Location = new Point(10, 385),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9)
             };
-            pnl.Controls.Add(lblAdd);
+            pnl.Controls.Add(lblWhiteAdd);
 
             txtNewWhiteIP = new TextBox
             {
@@ -650,7 +695,7 @@ namespace RDPMonitor
             pnl.HorizontalScroll.Enabled = false;
             pnl.HorizontalScroll.Visible = false;
 
-            var lblTitle = new Label
+            lblManualTitle = new Label
             {
                 Text = Lang.Get("SECTION_MANUAL_BLOCK"),
                 AutoSize = true,
@@ -658,16 +703,16 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = Color.FromArgb(244, 67, 54)
             };
-            pnl.Controls.Add(lblTitle);
+            pnl.Controls.Add(lblManualTitle);
 
-            var lblIP = new Label
+            lblManualIp = new Label
             {
                 Text = Lang.Get("LABEL_IP_ADDRESS"),
                 AutoSize = true,
                 Location = new Point(10, 50),
                 Font = new Font("Segoe UI", 9)
             };
-            pnl.Controls.Add(lblIP);
+            pnl.Controls.Add(lblManualIp);
 
             txtIPToBlock = new TextBox
             {
@@ -679,14 +724,14 @@ namespace RDPMonitor
             AttachIpInputMask(txtIPToBlock);
             pnl.Controls.Add(txtIPToBlock);
 
-            var lblMinutes = new Label
+            lblManualDuration = new Label
             {
                 Text = Lang.Get("LABEL_BLOCK_DURATION_FULL"),
                 AutoSize = true,
                 Location = new Point(10, 115),
                 Font = new Font("Segoe UI", 9)
             };
-            pnl.Controls.Add(lblMinutes);
+            pnl.Controls.Add(lblManualDuration);
 
             txtBlockMinutes = new TextBox
             {
@@ -815,7 +860,7 @@ namespace RDPMonitor
             pnl.HorizontalScroll.Enabled = false;
             pnl.HorizontalScroll.Visible = false;
 
-            var lblTitle = new Label
+            lblSettingsServiceConfigTitle = new Label
             {
                 Text = Lang.Get("SECTION_SERVICE_CONFIG"),
                 AutoSize = true,
@@ -823,17 +868,17 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 102, 204)
             };
-            pnl.Controls.Add(lblTitle);
+            pnl.Controls.Add(lblSettingsServiceConfigTitle);
 
             // RDP Port
-            var lblPort = new Label
+            lblSettingsRdpPort = new Label
             {
                 Text = Lang.Get("LABEL_RDP_PORT"),
                 AutoSize = true,
                 Location = new Point(10, 50),
                 Font = new Font("Segoe UI", 9)
             };
-            pnl.Controls.Add(lblPort);
+            pnl.Controls.Add(lblSettingsRdpPort);
 
             txtPort = new TextBox
             {
@@ -845,14 +890,14 @@ namespace RDPMonitor
             pnl.Controls.Add(txtPort);
 
             // Block Levels
-            var lblLevels = new Label
+            lblSettingsBlockLevels = new Label
             {
                 Text = Lang.Get("LABEL_BLOCK_LEVELS_TABLE") + " (60 / 12h / 7d / 2w)",
                 AutoSize = true,
                 Location = new Point(10, 120),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lblLevels);
+            pnl.Controls.Add(lblSettingsBlockLevels);
 
             dgvBlockLevels = new DataGridView
             {
@@ -901,7 +946,7 @@ namespace RDPMonitor
             btnRemoveLevel.Click += BtnRemoveLevel_Click;
             pnl.Controls.Add(btnRemoveLevel);
 
-            var lblAntiBrute = new Label
+            lblAntiBruteSectionTitle = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_SECTION"),
                 AutoSize = true,
@@ -909,7 +954,10 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 102, 204)
             };
-            pnl.Controls.Add(lblAntiBrute);
+            pnl.Controls.Add(lblAntiBruteSectionTitle);
+
+            lblHelpAntiBrute = CreateHelpBadge(0, 0);
+            pnl.Controls.Add(lblHelpAntiBrute);
 
             chkAntiBruteEnabled = new CheckBox
             {
@@ -920,14 +968,17 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(chkAntiBruteEnabled);
 
-            var lblSpray = new Label
+            lblSprayTitle = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_SPRAY"),
                 AutoSize = true,
                 Location = new Point(440, 110),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lblSpray);
+            pnl.Controls.Add(lblSprayTitle);
+
+            lblHelpSpray = CreateHelpBadge(0, 0);
+            pnl.Controls.Add(lblHelpSpray);
 
             chkSprayEnabled = new CheckBox
             {
@@ -937,13 +988,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(chkSprayEnabled);
 
-            var lblSprayWindow = new Label
+            lblAntiBruteSprayWindow = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN"),
                 AutoSize = true,
                 Location = new Point(440, 158)
             };
-            pnl.Controls.Add(lblSprayWindow);
+            pnl.Controls.Add(lblAntiBruteSprayWindow);
 
             txtSprayWindowMinutes = new TextBox
             {
@@ -953,13 +1004,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtSprayWindowMinutes);
 
-            var lblSprayThreshold = new Label
+            lblAntiBruteSprayThreshold = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_UNIQUE_IPS"),
                 AutoSize = true,
                 Location = new Point(440, 186)
             };
-            pnl.Controls.Add(lblSprayThreshold);
+            pnl.Controls.Add(lblAntiBruteSprayThreshold);
 
             txtSprayUniqueIpsThreshold = new TextBox
             {
@@ -969,13 +1020,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtSprayUniqueIpsThreshold);
 
-            var lblSprayBlock = new Label
+            lblAntiBruteSprayBlock = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_BLOCK_MIN"),
                 AutoSize = true,
                 Location = new Point(440, 214)
             };
-            pnl.Controls.Add(lblSprayBlock);
+            pnl.Controls.Add(lblAntiBruteSprayBlock);
 
             txtSprayBlockMinutes = new TextBox
             {
@@ -985,22 +1036,25 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtSprayBlockMinutes);
 
-            var lblIpAbuse = new Label
+            lblIpAbuseTitle = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_IP_ABUSE"),
                 AutoSize = true,
                 Location = new Point(440, 242),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lblIpAbuse);
+            pnl.Controls.Add(lblIpAbuseTitle);
 
-            var lblIpAbuseWindow = new Label
+            lblHelpIpAbuse = CreateHelpBadge(0, 0);
+            pnl.Controls.Add(lblHelpIpAbuse);
+
+            lblAntiBruteIpAbuseWindow = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN") + " (NAT: M=10)",
                 AutoSize = true,
                 Location = new Point(440, 268)
             };
-            pnl.Controls.Add(lblIpAbuseWindow);
+            pnl.Controls.Add(lblAntiBruteIpAbuseWindow);
 
             txtIpAbuseWindowMinutes = new TextBox
             {
@@ -1010,13 +1064,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtIpAbuseWindowMinutes);
 
-            var lblIpAbuseUsers = new Label
+            lblAntiBruteIpAbuseUsers = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_UNIQUE_USERS") + " (NAT: N=3)",
                 AutoSize = true,
                 Location = new Point(440, 296)
             };
-            pnl.Controls.Add(lblIpAbuseUsers);
+            pnl.Controls.Add(lblAntiBruteIpAbuseUsers);
 
             txtIpAbuseDistinctUsersThreshold = new TextBox
             {
@@ -1026,14 +1080,17 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtIpAbuseDistinctUsersThreshold);
 
-            var lblRecurrence = new Label
+            lblRecurrenceTitle = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_RECURRENCE"),
                 AutoSize = true,
                 Location = new Point(440, 328),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lblRecurrence);
+            pnl.Controls.Add(lblRecurrenceTitle);
+
+            lblHelpRecurrence = CreateHelpBadge(0, 0);
+            pnl.Controls.Add(lblHelpRecurrence);
 
             chkRecurrenceEnabled = new CheckBox
             {
@@ -1043,13 +1100,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(chkRecurrenceEnabled);
 
-            var lblRecurrenceLookback = new Label
+            lblAntiBruteRecurrenceLookback = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_LOOKBACK_H"),
                 AutoSize = true,
                 Location = new Point(440, 376)
             };
-            pnl.Controls.Add(lblRecurrenceLookback);
+            pnl.Controls.Add(lblAntiBruteRecurrenceLookback);
 
             txtRecurrenceLookbackHours = new TextBox
             {
@@ -1059,13 +1116,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtRecurrenceLookbackHours);
 
-            var lblRecurrenceStep = new Label
+            lblAntiBruteRecurrenceStep = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_STEP"),
                 AutoSize = true,
                 Location = new Point(440, 404)
             };
-            pnl.Controls.Add(lblRecurrenceStep);
+            pnl.Controls.Add(lblAntiBruteRecurrenceStep);
 
             txtRecurrenceStepMultiplier = new TextBox
             {
@@ -1075,13 +1132,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtRecurrenceStepMultiplier);
 
-            var lblRecurrenceMax = new Label
+            lblAntiBruteRecurrenceMax = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_MAX"),
                 AutoSize = true,
                 Location = new Point(440, 432)
             };
-            pnl.Controls.Add(lblRecurrenceMax);
+            pnl.Controls.Add(lblAntiBruteRecurrenceMax);
 
             txtRecurrenceMaxMultiplier = new TextBox
             {
@@ -1091,14 +1148,17 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtRecurrenceMaxMultiplier);
 
-            var lblSubnet = new Label
+            lblSubnetTitle = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_SUBNET"),
                 AutoSize = true,
                 Location = new Point(440, 464),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lblSubnet);
+            pnl.Controls.Add(lblSubnetTitle);
+
+            lblHelpSubnet = CreateHelpBadge(0, 0);
+            pnl.Controls.Add(lblHelpSubnet);
 
             chkSubnetEnabled = new CheckBox
             {
@@ -1108,13 +1168,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(chkSubnetEnabled);
 
-            var lblSubnetWindow = new Label
+            lblAntiBruteSubnetWindow = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN"),
                 AutoSize = true,
                 Location = new Point(440, 512)
             };
-            pnl.Controls.Add(lblSubnetWindow);
+            pnl.Controls.Add(lblAntiBruteSubnetWindow);
 
             txtSubnetWindowMinutes = new TextBox
             {
@@ -1124,13 +1184,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtSubnetWindowMinutes);
 
-            var lblSubnetThreshold = new Label
+            lblAntiBruteSubnetThreshold = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_UNIQUE_IPS"),
                 AutoSize = true,
                 Location = new Point(440, 540)
             };
-            pnl.Controls.Add(lblSubnetThreshold);
+            pnl.Controls.Add(lblAntiBruteSubnetThreshold);
 
             txtSubnetUniqueIpsThreshold = new TextBox
             {
@@ -1140,13 +1200,13 @@ namespace RDPMonitor
             };
             pnl.Controls.Add(txtSubnetUniqueIpsThreshold);
 
-            var lblSubnetBlock = new Label
+            lblAntiBruteSubnetBlock = new Label
             {
                 Text = Lang.Get("ANTI_BRUTE_BLOCK_MIN"),
                 AutoSize = true,
                 Location = new Point(440, 568)
             };
-            pnl.Controls.Add(lblSubnetBlock);
+            pnl.Controls.Add(lblAntiBruteSubnetBlock);
 
             txtSubnetBlockMinutes = new TextBox
             {
@@ -1171,9 +1231,71 @@ namespace RDPMonitor
             pnl.Controls.Add(btnSaveConfig);
 
             tab.Controls.Add(pnl);
+
+            PositionAntiBruteHelpBadges();
+            ApplyAntiBruteHelpTooltips();
             
             // Load initial config
             LoadConfigToSettings();
+        }
+
+        private Label CreateHelpBadge(int x, int y)
+        {
+            return new Label
+            {
+                Text = "?",
+                Location = new Point(x, y),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                ForeColor = Color.FromArgb(198, 40, 40),
+                BackColor = Color.Transparent,
+                BorderStyle = BorderStyle.None,
+                Cursor = Cursors.Help
+            };
+        }
+
+        private void PositionAntiBruteHelpBadges()
+        {
+            PositionHelpBadge(lblHelpAntiBrute, lblAntiBruteSectionTitle);
+            PositionHelpBadge(lblHelpSpray, lblSprayTitle);
+            PositionHelpBadge(lblHelpIpAbuse, lblIpAbuseTitle);
+            PositionHelpBadge(lblHelpRecurrence, lblRecurrenceTitle);
+            PositionHelpBadge(lblHelpSubnet, lblSubnetTitle);
+        }
+
+        private void PositionHelpBadge(Label helpBadge, Label titleLabel)
+        {
+            if (helpBadge == null || titleLabel == null)
+                return;
+
+            helpBadge.Left = titleLabel.Right + 6;
+            helpBadge.Top = titleLabel.Top - 1;
+            helpBadge.BringToFront();
+        }
+
+        private void ApplyAntiBruteHelpTooltips()
+        {
+            if (antiBruteHelpToolTip == null)
+            {
+                antiBruteHelpToolTip = new ToolTip
+                {
+                    AutoPopDelay = 20000,
+                    InitialDelay = 250,
+                    ReshowDelay = 100,
+                    ShowAlways = true
+                };
+            }
+
+            if (lblHelpAntiBrute != null)
+                antiBruteHelpToolTip.SetToolTip(lblHelpAntiBrute, Lang.Get("ANTI_BRUTE_HELP_OVERVIEW"));
+            if (lblHelpSpray != null)
+                antiBruteHelpToolTip.SetToolTip(lblHelpSpray, Lang.Get("ANTI_BRUTE_HELP_SPRAY"));
+            if (lblHelpIpAbuse != null)
+                antiBruteHelpToolTip.SetToolTip(lblHelpIpAbuse, Lang.Get("ANTI_BRUTE_HELP_IP_ABUSE"));
+            if (lblHelpRecurrence != null)
+                antiBruteHelpToolTip.SetToolTip(lblHelpRecurrence, Lang.Get("ANTI_BRUTE_HELP_RECURRENCE"));
+            if (lblHelpSubnet != null)
+                antiBruteHelpToolTip.SetToolTip(lblHelpSubnet, Lang.Get("ANTI_BRUTE_HELP_SUBNET"));
         }
 
         private void CreateInterfacesTab(TabPage tab)
@@ -1182,7 +1304,7 @@ namespace RDPMonitor
             pnl.HorizontalScroll.Enabled = false;
             pnl.HorizontalScroll.Visible = false;
 
-            var lblTitle = new Label
+            lblInterfacesTitle = new Label
             {
                 Text = Lang.Get("IFACE_HEADER"),
                 AutoSize = true,
@@ -1190,7 +1312,7 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 102, 204)
             };
-            pnl.Controls.Add(lblTitle);
+            pnl.Controls.Add(lblInterfacesTitle);
 
             lblInterfacesHint = new Label
             {
@@ -1447,7 +1569,7 @@ namespace RDPMonitor
             int yPos = 10;
 
             // Section header
-            var lblHeader = new Label
+            lblAlertsHeader = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(900, 30),
@@ -1455,7 +1577,7 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 102, 204)
             };
-            pnl.Controls.Add(lblHeader);
+            pnl.Controls.Add(lblAlertsHeader);
             yPos += 40;
 
             // Enable checkbox
@@ -1472,14 +1594,14 @@ namespace RDPMonitor
             yPos += 35;
 
             // Bot Token label
-            var lblBotToken = new Label
+            lblAlertsBotToken = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(150, 25),
                 Text = Lang.Get("TELEGRAM_BOT_TOKEN"),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lblBotToken);
+            pnl.Controls.Add(lblAlertsBotToken);
             yPos += 25;
 
             // Bot Token textbox
@@ -1494,14 +1616,14 @@ namespace RDPMonitor
             yPos += 35;
 
             // Chat ID label
-            var lblChatId = new Label
+            lblAlertsChatId = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(150, 25),
                 Text = Lang.Get("TELEGRAM_CHAT_ID"),
                 Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
-            pnl.Controls.Add(lblChatId);
+            pnl.Controls.Add(lblAlertsChatId);
             yPos += 25;
 
             // Chat ID textbox
@@ -1516,7 +1638,7 @@ namespace RDPMonitor
             yPos += 40;
 
             // --- MESSAGE TEMPLATES SECTION ---
-            var lblTemplatesHeader = new Label
+            lblAlertsTemplatesHeader = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(900, 30),
@@ -1524,11 +1646,11 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 102, 204)
             };
-            pnl.Controls.Add(lblTemplatesHeader);
+            pnl.Controls.Add(lblAlertsTemplatesHeader);
             yPos += 35;
 
             // Placeholders info
-            var lblPlaceholders = new Label
+            lblAlertsPlaceholders = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(900, 20),
@@ -1536,7 +1658,7 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 8, FontStyle.Italic),
                 ForeColor = Color.Gray
             };
-            pnl.Controls.Add(lblPlaceholders);
+            pnl.Controls.Add(lblAlertsPlaceholders);
             yPos += 30;
 
             // Get current config to determine how many levels exist
@@ -1556,6 +1678,7 @@ namespace RDPMonitor
             
             // Create template editors for each level
             txtMessageTemplates.Clear();
+            lblAlertsLevelCaptions.Clear();
             for (int i = 0; i < levelCount; i++)
             {
                 string key = $"level{i + 1}";
@@ -1569,6 +1692,7 @@ namespace RDPMonitor
                     ForeColor = Color.FromArgb(70, 70, 70)
                 };
                 pnl.Controls.Add(lblLevel);
+                lblAlertsLevelCaptions.Add(lblLevel);
                 yPos += 25;
 
                 var txtTemplate = new TextBox
@@ -1585,7 +1709,7 @@ namespace RDPMonitor
             }
 
             // Default template
-            var lblDefault = new Label
+            lblAlertsDefaultTemplate = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(900, 22),
@@ -1593,7 +1717,7 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 ForeColor = Color.FromArgb(70, 70, 70)
             };
-            pnl.Controls.Add(lblDefault);
+            pnl.Controls.Add(lblAlertsDefaultTemplate);
             yPos += 25;
 
             var txtDefaultTemplate = new TextBox
@@ -1658,7 +1782,7 @@ namespace RDPMonitor
             yPos += 40;
 
             // Help section
-            var lblHelpTitle = new Label
+            lblAlertsHelpTitle = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(900, 25),
@@ -1666,9 +1790,10 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
                 ForeColor = Color.FromArgb(100, 100, 100)
             };
-            pnl.Controls.Add(lblHelpTitle);
+            pnl.Controls.Add(lblAlertsHelpTitle);
             yPos += 30;
 
+            lblAlertsHelpSteps.Clear();
             for (int i = 1; i <= 5; i++)
             {
                 var step = new Label
@@ -1680,6 +1805,7 @@ namespace RDPMonitor
                     ForeColor = Color.FromArgb(80, 80, 80)
                 };
                 pnl.Controls.Add(step);
+                lblAlertsHelpSteps.Add(step);
                 yPos += 25;
             }
 
@@ -1972,7 +2098,7 @@ namespace RDPMonitor
             int yPos = 10;
 
             // Section header
-            var lblHeader = new Label
+            lblMessageSettingsHeader = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(900, 30),
@@ -1980,11 +2106,11 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 102, 204)
             };
-            pnl.Controls.Add(lblHeader);
+            pnl.Controls.Add(lblMessageSettingsHeader);
             yPos += 45;
 
             // Monitor section
-            var lblMonitor = new Label
+            lblMessageSettingsMonitorSection = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(300, 25),
@@ -1992,7 +2118,7 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
                 ForeColor = Color.FromArgb(50, 50, 50)
             };
-            pnl.Controls.Add(lblMonitor);
+            pnl.Controls.Add(lblMessageSettingsMonitorSection);
             yPos += 30;
 
             chkNotifyMonitorStart = new CheckBox
@@ -2018,7 +2144,7 @@ namespace RDPMonitor
             yPos += 45;
 
             // Service section
-            var lblService = new Label
+            lblMessageSettingsServiceSection = new Label
             {
                 Location = new Point(10, yPos),
                 Size = new Size(300, 25),
@@ -2026,7 +2152,7 @@ namespace RDPMonitor
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
                 ForeColor = Color.FromArgb(50, 50, 50)
             };
-            pnl.Controls.Add(lblService);
+            pnl.Controls.Add(lblMessageSettingsServiceSection);
             yPos += 30;
 
             chkNotifyServiceStart = new CheckBox
@@ -2807,6 +2933,16 @@ namespace RDPMonitor
                 
                 if (config != null)
                 {
+                    string desiredLanguage = string.Equals(config.UiLanguage, "EN", StringComparison.OrdinalIgnoreCase)
+                        ? "EN"
+                        : "UA";
+                    if (!string.Equals(Program.CurrentLanguage, desiredLanguage, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Program.CurrentLanguage = desiredLanguage;
+                        SyncLanguageMenuChecks();
+                        RefreshAllUITexts();
+                    }
+
                     var levelsText = new System.Text.StringBuilder();
                     var cfgPorts = (config.Ports ?? new List<int>()).Where(p => p > 0).Distinct().OrderBy(p => p).ToList();
                     if (cfgPorts.Count == 0 && config.Port > 0)
@@ -3458,13 +3594,31 @@ namespace RDPMonitor
             btnStartService.Text = Lang.Get("BTN_START");
             btnStopService.Text = Lang.Get("BTN_STOP");
             btnRefresh.Text = Lang.Get("BTN_REFRESH");
-            btnSaveConfig.Text = Lang.Get("BTN_SAVE_CONFIGURATION");
+            btnSaveConfig.Text = "💾 " + Lang.Get("BTN_SAVE_CONFIGURATION");
             btnAddLevel.Text = Lang.Get("BTN_ADD_LEVEL_WITH_PLUS");
             btnRemoveLevel.Text = Lang.Get("BTN_REMOVE_WITH_X");
-            btnManualBlock.Text = Lang.Get("BTN_BLOCK_THIS_IP");
-            btnUnblockIP.Text = Lang.Get("BTN_UNBLOCK_IP");
+            btnManualBlock.Text = "🔒 " + Lang.Get("BTN_BLOCK_THIS_IP");
+            btnUnblockIP.Text = "🔓 " + Lang.Get("BTN_UNBLOCK_IP");
+            btnClearAllBlocks.Text = "🧹 " + Lang.Get("BTN_CLEAR_ALL_BLOCKS");
             btnAddWhiteIP.Text = Lang.Get("BTN_ADD_WITH_PLUS");
             btnRemoveWhiteIP.Text = Lang.Get("BTN_REMOVE_WITH_X");
+
+            if (lblBannedTitle != null)
+                lblBannedTitle.Text = Lang.Get("SECTION_BLOCKED_IPS_FIREWALL");
+            if (lblBannedUnblock != null)
+                lblBannedUnblock.Text = Lang.Get("SECTION_IP_TO_UNBLOCK");
+            if (lblWhiteTitle != null)
+                lblWhiteTitle.Text = Lang.Get("SECTION_WHITE_LIST");
+            if (lblWhiteAdd != null)
+                lblWhiteAdd.Text = Lang.Get("SECTION_ADD_WHITELIST_IP");
+            if (lblManualTitle != null)
+                lblManualTitle.Text = Lang.Get("SECTION_MANUAL_BLOCK");
+            if (lblManualIp != null)
+                lblManualIp.Text = Lang.Get("LABEL_IP_ADDRESS");
+            if (lblManualDuration != null)
+                lblManualDuration.Text = Lang.Get("LABEL_BLOCK_DURATION_FULL");
+            if (lblBlockStatus != null)
+                lblBlockStatus.Text = Lang.Get("LABEL_BLOCK_STATUS_PLACEHOLDER");
             
             if (btnSaveMessageSettings != null)
                 btnSaveMessageSettings.Text = Lang.Get("MSG_SETTINGS_SAVE_BTN");
@@ -3483,12 +3637,94 @@ namespace RDPMonitor
 
             if (chkAntiBruteEnabled != null)
                 chkAntiBruteEnabled.Text = Lang.Get("ANTI_BRUTE_ENABLED");
+            if (lblSettingsServiceConfigTitle != null)
+                lblSettingsServiceConfigTitle.Text = Lang.Get("SECTION_SERVICE_CONFIG");
+            if (lblSettingsRdpPort != null)
+                lblSettingsRdpPort.Text = Lang.Get("LABEL_RDP_PORT");
+            if (lblSettingsBlockLevels != null)
+                lblSettingsBlockLevels.Text = Lang.Get("LABEL_BLOCK_LEVELS_TABLE") + " (60 / 12h / 7d / 2w)";
+            if (lblAntiBruteSectionTitle != null)
+                lblAntiBruteSectionTitle.Text = Lang.Get("ANTI_BRUTE_SECTION");
+            if (lblSprayTitle != null)
+                lblSprayTitle.Text = Lang.Get("ANTI_BRUTE_SPRAY");
+            if (lblIpAbuseTitle != null)
+                lblIpAbuseTitle.Text = Lang.Get("ANTI_BRUTE_IP_ABUSE");
+            if (lblRecurrenceTitle != null)
+                lblRecurrenceTitle.Text = Lang.Get("ANTI_BRUTE_RECURRENCE");
+            if (lblSubnetTitle != null)
+                lblSubnetTitle.Text = Lang.Get("ANTI_BRUTE_SUBNET");
+            if (lblAntiBruteSprayWindow != null)
+                lblAntiBruteSprayWindow.Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN");
+            if (lblAntiBruteSprayThreshold != null)
+                lblAntiBruteSprayThreshold.Text = Lang.Get("ANTI_BRUTE_UNIQUE_IPS");
+            if (lblAntiBruteSprayBlock != null)
+                lblAntiBruteSprayBlock.Text = Lang.Get("ANTI_BRUTE_BLOCK_MIN");
+            if (lblAntiBruteIpAbuseWindow != null)
+                lblAntiBruteIpAbuseWindow.Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN") + " (NAT: M=10)";
+            if (lblAntiBruteIpAbuseUsers != null)
+                lblAntiBruteIpAbuseUsers.Text = Lang.Get("ANTI_BRUTE_UNIQUE_USERS") + " (NAT: N=3)";
+            if (lblAntiBruteRecurrenceLookback != null)
+                lblAntiBruteRecurrenceLookback.Text = Lang.Get("ANTI_BRUTE_LOOKBACK_H");
+            if (lblAntiBruteRecurrenceStep != null)
+                lblAntiBruteRecurrenceStep.Text = Lang.Get("ANTI_BRUTE_STEP");
+            if (lblAntiBruteRecurrenceMax != null)
+                lblAntiBruteRecurrenceMax.Text = Lang.Get("ANTI_BRUTE_MAX");
+            if (lblAntiBruteSubnetWindow != null)
+                lblAntiBruteSubnetWindow.Text = Lang.Get("ANTI_BRUTE_WINDOW_MIN");
+            if (lblAntiBruteSubnetThreshold != null)
+                lblAntiBruteSubnetThreshold.Text = Lang.Get("ANTI_BRUTE_UNIQUE_IPS");
+            if (lblAntiBruteSubnetBlock != null)
+                lblAntiBruteSubnetBlock.Text = Lang.Get("ANTI_BRUTE_BLOCK_MIN");
             if (chkSprayEnabled != null)
                 chkSprayEnabled.Text = Lang.Get("ANTI_BRUTE_ENABLED_SHORT");
             if (chkRecurrenceEnabled != null)
                 chkRecurrenceEnabled.Text = Lang.Get("ANTI_BRUTE_ENABLED_SHORT");
             if (chkSubnetEnabled != null)
                 chkSubnetEnabled.Text = Lang.Get("ANTI_BRUTE_ENABLED_SHORT");
+
+            if (lblInterfacesTitle != null)
+                lblInterfacesTitle.Text = Lang.Get("IFACE_HEADER");
+
+            if (lblAlertsHeader != null)
+                lblAlertsHeader.Text = Lang.Get("TELEGRAM_SECTION_HEADER");
+            if (chkTelegramEnabled != null)
+                chkTelegramEnabled.Text = Lang.Get("TELEGRAM_ENABLE");
+            if (lblAlertsBotToken != null)
+                lblAlertsBotToken.Text = Lang.Get("TELEGRAM_BOT_TOKEN");
+            if (lblAlertsChatId != null)
+                lblAlertsChatId.Text = Lang.Get("TELEGRAM_CHAT_ID");
+            if (lblAlertsTemplatesHeader != null)
+                lblAlertsTemplatesHeader.Text = Lang.Get("TELEGRAM_MESSAGE_TEMPLATES");
+            if (lblAlertsPlaceholders != null)
+                lblAlertsPlaceholders.Text = Lang.Get("TELEGRAM_PLACEHOLDERS");
+            if (lblAlertsDefaultTemplate != null)
+                lblAlertsDefaultTemplate.Text = Lang.Get("TELEGRAM_TEMPLATE_DEFAULT");
+            if (lblAlertsHelpTitle != null)
+                lblAlertsHelpTitle.Text = Lang.Get("TELEGRAM_HELP_TITLE");
+            if (lblAlertsLevelCaptions.Count > 0)
+            {
+                for (int i = 0; i < lblAlertsLevelCaptions.Count; i++)
+                    lblAlertsLevelCaptions[i].Text = $"{Lang.Get("TELEGRAM_TEMPLATE_LEVEL")} {i + 1}:";
+            }
+            if (lblAlertsHelpSteps.Count > 0)
+            {
+                for (int i = 0; i < lblAlertsHelpSteps.Count; i++)
+                    lblAlertsHelpSteps[i].Text = Lang.Get($"TELEGRAM_HELP_STEP{i + 1}");
+            }
+            if (btnTestTelegram != null)
+                btnTestTelegram.Text = Lang.Get("TELEGRAM_TEST_BUTTON");
+            if (btnSaveTelegram != null)
+                btnSaveTelegram.Text = Lang.Get("TELEGRAM_SAVE_BUTTON");
+
+            if (lblMessageSettingsHeader != null)
+                lblMessageSettingsHeader.Text = Lang.Get("MSG_SETTINGS_HEADER");
+            if (lblMessageSettingsMonitorSection != null)
+                lblMessageSettingsMonitorSection.Text = Lang.Get("MSG_SETTINGS_MONITOR");
+            if (lblMessageSettingsServiceSection != null)
+                lblMessageSettingsServiceSection.Text = Lang.Get("MSG_SETTINGS_SERVICE");
+
+            PositionAntiBruteHelpBadges();
+            ApplyAntiBruteHelpTooltips();
             
             // DataGridView columns
             dgvBlockLevels.Columns[0].HeaderText = Lang.Get("GRID_ATTEMPTS");
