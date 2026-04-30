@@ -2,6 +2,11 @@
 # DEPLOYMENT SCRIPT FOR WINDOWS SERVER
 # ASP.NET Core 8.0 Web Application
 # ========================================
+
+Write-Host "[DEPRECATED] deploy.ps1 is a legacy WebApp script and must not be used." -ForegroundColor Yellow
+Write-Host "Use CANONICAL_INSTALL.md and release/RDP-Security-Suite-ZIP/install-clean.ps1" -ForegroundColor Cyan
+exit 1
+
 param(
     [string]$Environment = "Release",
     [string]$OutputPath = ".\artifacts\deploy",

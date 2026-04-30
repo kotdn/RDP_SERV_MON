@@ -84,8 +84,8 @@ namespace RDPMonitor
             ["ANTI_BRUTE_UNIQUE_USERS"] = new Dictionary<string, string> { ["UA"] = "Поріг різних логінів:", ["EN"] = "Distinct users threshold:" },
             ["ANTI_BRUTE_BLOCK_MIN"] = new Dictionary<string, string> { ["UA"] = "Блок (хв):", ["EN"] = "Block (min):" },
             ["ANTI_BRUTE_LOOKBACK_H"] = new Dictionary<string, string> { ["UA"] = "Історія (год):", ["EN"] = "Lookback (hours):" },
-            ["ANTI_BRUTE_STEP"] = new Dictionary<string, string> { ["UA"] = "Step multiplier:", ["EN"] = "Step multiplier:" },
-            ["ANTI_BRUTE_MAX"] = new Dictionary<string, string> { ["UA"] = "Max multiplier:", ["EN"] = "Max multiplier:" },
+            ["ANTI_BRUTE_STEP"] = new Dictionary<string, string> { ["UA"] = "Крок множника:", ["EN"] = "Step multiplier:" },
+            ["ANTI_BRUTE_MAX"] = new Dictionary<string, string> { ["UA"] = "Макс. множник:", ["EN"] = "Max multiplier:" },
             ["ANTI_BRUTE_HELP_OVERVIEW"] = new Dictionary<string, string>
             {
                 ["UA"] = "Anti-Brute аналізує невдалі входи та застосовує додаткові правила блокування поверх базових рівнів.",

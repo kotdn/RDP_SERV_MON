@@ -1,3 +1,12 @@
+# DEPRECATED: Legacy WebApp Local Setup
+
+This document is deprecated and kept only for historical reference.
+
+Use the canonical installation path instead:
+- see CANONICAL_INSTALL.md
+
+---
+
 # 🔧 ЛОКАЛЬНИЙ ЗАПУСК ДЛЯ РОЗРОБКИ
 
 ## 📍 ШЛЯХИ ПРОЕКТУ

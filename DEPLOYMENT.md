@@ -1,3 +1,12 @@
+# DEPRECATED: Legacy WebApp Deployment Guide
+
+This document is deprecated and kept only for historical reference.
+
+Use the canonical installation path instead:
+- see CANONICAL_INSTALL.md
+
+---
+
 # 🚀 DEPLOYMENT GUIDE
 
 ## Быстрый старт

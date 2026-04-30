@@ -4,11 +4,15 @@
 # ============================================
 
 param(
-    [ValidateSet("start", "stop", "restart", "install", "uninstall", "console", "status")]
+    [ValidateSet("menu", "start", "stop", "restart", "install", "uninstall", "console", "status")]
     [string]$Action = "menu",
     [string]$AppPath = "C:\Apps\WebApp",
     [string]$ServiceName = "WebApp"
 )
+
+Write-Host "[DEPRECATED] server-startup.ps1 is a legacy WebApp script and must not be used." -ForegroundColor Yellow
+Write-Host "Use CANONICAL_INSTALL.md and release/RDP-Security-Suite-ZIP/install-clean.ps1" -ForegroundColor Cyan
+exit 1
 
 function Show-Menu {
     Write-Host ""

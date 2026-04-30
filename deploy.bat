@@ -4,6 +4,10 @@ REM DEPLOYMENT SCRIPT - BATCH VERSION
 REM ASP.NET Core 8.0 Web Application
 REM ==========================================
 
+echo [DEPRECATED] deploy.bat is a legacy WebApp script and must not be used.
+echo Use CANONICAL_INSTALL.md and release\RDP-Security-Suite-ZIP\install-clean.ps1
+exit /b 1
+
 setlocal enabledelayedexpansion
 
 echo.

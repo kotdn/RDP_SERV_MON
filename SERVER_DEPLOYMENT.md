@@ -1,3 +1,12 @@
+# DEPRECATED: Legacy WebApp Server Deployment Checklist
+
+This document is deprecated and kept only for historical reference.
+
+Use the canonical installation path instead:
+- see CANONICAL_INSTALL.md
+
+---
+
 # 📂 SERVER DEPLOYMENT CHECKLIST
 
 ## 🎯 ШЛЯХИ НА СЕРВЕРІ

@@ -25,6 +25,8 @@ using System.Runtime.InteropServices;
 class Program
 {
 #pragma warning disable CA1416
+    internal const string TelegramUiRevision = "2026-04-26-telegram-grouped-menu";
+
     public static void WriteBootstrapLog(string message)
     {
         try
@@ -56,7 +58,55 @@ class Program
                     }
                     else if (command == "uninstall")
                     {
-                        UninstallService();
+                        bool removeFirewallRule = false;
+                        bool hasExplicitFirewallChoice = false;
+
+                        for (int i = 1; i < args.Length; i++)
+                        {
+                            string arg = args[i];
+                            if (arg.Equals("--remove-firewall", StringComparison.OrdinalIgnoreCase))
+                            {
+                                removeFirewallRule = true;
+                                hasExplicitFirewallChoice = true;
+                            }
+                            else if (arg.Equals("--keep-firewall", StringComparison.OrdinalIgnoreCase))
+                            {
+                                removeFirewallRule = false;
+                                hasExplicitFirewallChoice = true;
+                            }
+                        }
+
+                        if (!hasExplicitFirewallChoice && Environment.UserInteractive)
+                        {
+                            Console.Write("Remove firewall rule RDP_BLOCK_ALL as well? (y/N): ");
+                            string? answer = Console.ReadLine();
+                            removeFirewallRule = !string.IsNullOrWhiteSpace(answer) &&
+                                (answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) ||
+                                 answer.Trim().Equals("yes", StringComparison.OrdinalIgnoreCase));
+                        }
+
+                        UninstallService(removeFirewallRule);
+                        return;
+                    }
+                    else if (command == "run" || command == "console")
+                    {
+                        WriteBootstrapLog("Starting in interactive console mode.");
+
+                        var interactiveService = new RDPSecurityService();
+                        interactiveService.StartInteractive(args.Skip(1).ToArray());
+
+                        using var stopEvent = new ManualResetEventSlim(false);
+                        Console.CancelKeyPress += (_, e) =>
+                        {
+                            e.Cancel = true;
+                            stopEvent.Set();
+                        };
+
+                        Console.WriteLine("RDPSecurityService is running in interactive mode. Press Ctrl+C to stop.");
+                        stopEvent.Wait();
+
+                        interactiveService.StopInteractive();
+                        WriteBootstrapLog("Interactive console mode stopped.");
                         return;
                     }
                 }
@@ -292,7 +342,7 @@ class Program
             return false;
         }
 
-        static void UninstallService()
+        static void UninstallService(bool removeFirewallRule)
         {
             try
             {
@@ -300,7 +350,7 @@ class Program
                 var processInfo = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = "sc.exe",
-                    Arguments = $"delete {serviceName}",
+                    Arguments = $"stop {serviceName}",
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
@@ -314,10 +364,66 @@ class Program
                     }
 
                     process.WaitForExit();
-                    if (process.ExitCode == 0)
+                }
+
+                var deleteInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "sc.exe",
+                    Arguments = $"delete {serviceName}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (var deleteProcess = System.Diagnostics.Process.Start(deleteInfo))
+                {
+                    if (deleteProcess == null)
+                    {
+                        Console.WriteLine("Failed to start sc.exe for service removal");
+                        return;
+                    }
+
+                    deleteProcess.WaitForExit();
+                    if (deleteProcess.ExitCode == 0)
                         Console.WriteLine("Service uninstalled successfully");
                     else
-                        Console.WriteLine($"Failed to uninstall service (exit code: {process.ExitCode})");
+                        Console.WriteLine($"Failed to uninstall service (exit code: {deleteProcess.ExitCode})");
+                }
+
+                if (removeFirewallRule)
+                {
+                    var firewallDeleteInfo = new ProcessStartInfo
+                    {
+                        FileName = "netsh.exe",
+                        Arguments = "advfirewall firewall delete rule name=\"RDP_BLOCK_ALL\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+
+                    using (var firewallProcess = Process.Start(firewallDeleteInfo))
+                    {
+                        if (firewallProcess == null)
+                        {
+                            Console.WriteLine("Failed to start netsh.exe for firewall rule removal");
+                            return;
+                        }
+
+                        firewallProcess.WaitForExit();
+                        if (firewallProcess.ExitCode == 0)
+                        {
+                            Console.WriteLine("Firewall rule RDP_BLOCK_ALL removed.");
+                        }
+                        else
+                        {
+                            string output = (firewallProcess.StandardOutput.ReadToEnd() + " " + firewallProcess.StandardError.ReadToEnd()).Trim();
+                            Console.WriteLine($"Firewall rule removal warning (exit {firewallProcess.ExitCode}): {output}");
+                        }
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("Firewall rules were left unchanged.");
                 }
             }
             catch (Exception ex)
@@ -433,6 +539,7 @@ class Program
         private Thread telegramCommandThread = null!;
         private long telegramUpdateOffset = 0;
         private bool telegramCommandBootstrapDone = false;
+        private bool telegramPollingModeEnsured = false;
         private DateTime serviceStartUtc = DateTime.UtcNow;
         // private volatile GateConfig gateConfig = new GateConfig { Enabled = false, ListenPort = 3389, TargetHost = "127.0.0.1", TargetPort = 3389 };
 
@@ -521,6 +628,16 @@ class Program
             CanStop = true;
             CanPauseAndContinue = false;
             AutoLog = false;
+        }
+
+        public void StartInteractive(string[] args)
+        {
+            OnStart(args);
+        }
+
+        public void StopInteractive()
+        {
+            OnStop();
         }
 
         protected override void OnStart(string[] args)
@@ -874,8 +991,7 @@ class Program
                 DateTime eventTimeLocal = (record.TimeCreated ?? DateTime.UtcNow).ToLocalTime();
                 if (!HasRecentRdpPortActivity(sourceIP, DateTime.Now))
                 {
-                    WriteLog($"4625 ignored (not correlated with configured RDP port {rdpPort}): ip={sourceIP}");
-                    return;
+                    WriteLog($"4625 weak-correlation: no recent TCP activity on configured RDP port {rdpPort}; processing anyway. ip={sourceIP}");
                 }
 
                 ProcessFailedLogonEvent(sourceIP, ExtractTargetUserFromEventRecord(record), eventTimeLocal);
@@ -935,8 +1051,7 @@ class Program
                 bool ipAbuseDetected = RegisterFailedUserAndCheckIpAbuse(sourceIP, targetUser, DateTime.Now);
                 if (!ipAbuseDetected)
                 {
-                    WriteLog($"Per-IP threshold reached but skipped ban for {sourceIP}: no clear abuse (need >= {ipAbuseDistinctUsersThreshold} distinct users in {ipAbuseWindowMinutes}m)");
-                    return;
+                    WriteLog($"Per-IP threshold reached for {sourceIP}; proceeding with ban without spray signal (distinct users < {ipAbuseDistinctUsersThreshold} in {ipAbuseWindowMinutes}m)");
                 }
 
                 ApplyIpBan(
@@ -945,7 +1060,7 @@ class Program
                     attempts,
                     level.BlockMinutes,
                     level.Attempts,
-                    "per-ip-threshold",
+                    ipAbuseDetected ? "per-ip-threshold+spray-signal" : "per-ip-threshold",
                     targetUser);
             }
         }
@@ -1059,17 +1174,62 @@ class Program
             {
                 keyboard = new[]
                 {
-                    new[] { "/help" },
-                    new[] { "/status", "/status all" },
-                    new[] { "/service stop", "/monitor stop" },
-                    new[] { "/monitor start", "/thresholds" },
-                    new[] { "/here" },
-                    new[] { "/ban", "/unban" }
+                    new[] { UiText("Статуси", "Statuses"), UiText("Адмін", "Admin") }
                 },
                 resize_keyboard = true,
                 one_time_keyboard = false,
                 selective = true,
-                input_field_placeholder = UiText("Оберіть команду або введіть її вручну", "Choose a command or type it manually")
+                input_field_placeholder = UiText("Оберіть розділ або введіть команду вручну", "Choose a section or type a command manually")
+            };
+
+            return JsonSerializer.Serialize(keyboard);
+        }
+
+        private string BuildAdminKeyboardJson()
+        {
+            var keyboard = new
+            {
+                keyboard = new[]
+                {
+                    new[] { "/adduser", "/groupmembers" },
+                    new[] { "/ban", "/unban" },
+                    new[] { "/monitor start", "/monitor stop" },
+                    new[] { "/service stop", UiText("Назад", "Back") }
+                },
+                resize_keyboard = true,
+                one_time_keyboard = false,
+                selective = true,
+                input_field_placeholder = UiText("Адмін-команди", "Admin commands")
+            };
+
+            return JsonSerializer.Serialize(keyboard);
+        }
+
+        private string BuildStatusKeyboardJson()
+        {
+            var keyboard = new
+            {
+                keyboard = new[]
+                {
+                    new[] { "/status", "/status all" },
+                    new[] { "/thresholds", "/here" },
+                    new[] { UiText("Назад", "Back") }
+                },
+                resize_keyboard = true,
+                one_time_keyboard = false,
+                selective = true,
+                input_field_placeholder = UiText("Статуси та діагностика", "Statuses and diagnostics")
+            };
+
+            return JsonSerializer.Serialize(keyboard);
+        }
+
+        private string BuildKeyboardRemoveJson()
+        {
+            var keyboard = new
+            {
+                remove_keyboard = true,
+                selective = true
             };
 
             return JsonSerializer.Serialize(keyboard);
@@ -1098,6 +1258,61 @@ class Program
             };
 
             return JsonSerializer.Serialize(keyboard);
+        }
+
+        private bool IsSelfUnbanButtonText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            string trimmed = text.Trim();
+            return trimmed.Equals(UiText("Розблокуй мене", "Unblock me"), StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Разлочь меня", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Unblock me", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsGroupMembersButtonText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            string trimmed = text.Trim();
+            return trimmed.Equals("Пользователи в группе: членство в канале", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Користувачі в групі: членство в каналі", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Users in group: channel membership", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsAdminMenuButtonText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            string trimmed = text.Trim();
+            return trimmed.Equals(UiText("Адмін", "Admin"), StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Админ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Admin", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsStatusMenuButtonText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            string trimmed = text.Trim();
+            return trimmed.Equals(UiText("Статуси", "Statuses"), StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Статусы", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Statuses", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsBackMenuButtonText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            string trimmed = text.Trim();
+            return trimmed.Equals(UiText("Назад", "Back"), StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Назад", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Back", StringComparison.OrdinalIgnoreCase);
         }
 
         private string BuildContactRequestKeyboardJson()
@@ -1407,6 +1622,12 @@ class Program
             using (var client = new System.Net.Http.HttpClient())
             {
                 client.Timeout = TimeSpan.FromSeconds(35);
+
+                if (!telegramPollingModeEnsured)
+                {
+                    EnsureTelegramPollingMode(client, cfg);
+                }
+
                 string url = $"https://api.telegram.org/bot{cfg.BotToken}/getUpdates?offset={telegramUpdateOffset}&timeout=25";
                 var task = client.GetAsync(url);
                 task.Wait(TimeSpan.FromSeconds(35));
@@ -1416,7 +1637,23 @@ class Program
                 var response = task.Result;
                 if (!response.IsSuccessStatusCode)
                 {
-                    WriteLog($"Telegram getUpdates failed: {response.StatusCode}");
+                    string errorBody = string.Empty;
+                    try
+                    {
+                        errorBody = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    }
+                    catch
+                    {
+                        errorBody = string.Empty;
+                    }
+
+                    WriteLog($"Telegram getUpdates failed: {response.StatusCode}; body={errorBody}");
+
+                    if ((int)response.StatusCode == 409)
+                    {
+                        telegramPollingModeEnsured = false;
+                        EnsureTelegramPollingMode(client, cfg);
+                    }
                     return;
                 }
 
@@ -1550,6 +1787,52 @@ class Program
             }
         }
 
+        private void EnsureTelegramPollingMode(System.Net.Http.HttpClient client, TelegramConfig cfg)
+        {
+            try
+            {
+                string deleteWebhookUrl = $"https://api.telegram.org/bot{cfg.BotToken}/deleteWebhook?drop_pending_updates=false";
+                var task = client.GetAsync(deleteWebhookUrl);
+                task.Wait(TimeSpan.FromSeconds(15));
+                if (!task.IsCompletedSuccessfully)
+                {
+                    WriteLog("Telegram deleteWebhook did not complete successfully.");
+                    return;
+                }
+
+                var response = task.Result;
+                string body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                if (!response.IsSuccessStatusCode)
+                {
+                    WriteLog($"Telegram deleteWebhook failed: {response.StatusCode}; body={body}");
+                    return;
+                }
+
+                try
+                {
+                    using (JsonDocument document = JsonDocument.Parse(body))
+                    {
+                        if (document.RootElement.TryGetProperty("ok", out JsonElement okElement) && okElement.GetBoolean())
+                        {
+                            telegramPollingModeEnsured = true;
+                            WriteLog("Telegram polling mode ensured (webhook disabled).");
+                            return;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Ignore parse errors and fall through to generic log.
+                }
+
+                WriteLog($"Telegram deleteWebhook unexpected response: {body}");
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Telegram polling mode ensure error: {ex.Message}");
+            }
+        }
+
         private void HandleTelegramCommand(string chatId, string text)
         {
             try
@@ -1582,17 +1865,21 @@ class Program
                     if (isAdminChat)
                     {
                         AuthorizeTelegramChat(chatId);
+                        // Force keyboard refresh in Telegram clients that cache old layouts.
+                        TrySendTelegramText(chatId, UiText("Оновлюю клавіатуру...", "Refreshing keyboard..."), BuildKeyboardRemoveJson());
                         TrySendTelegramText(
                             chatId,
-                            UiText("✅ Вхід виконано. Команди розблоковано.", "✅ Signed in. Commands are unlocked."),
+                            UiText($"✅ Вхід виконано. Команди розблоковано.\nUI: {Program.TelegramUiRevision}", $"✅ Signed in. Commands are unlocked.\nUI: {Program.TelegramUiRevision}"),
                             BuildCommandKeyboardJson());
                         return;
                     }
 
                     AuthorizeLimitedTelegramChat(chatId);
+                    // Force keyboard refresh in Telegram clients that cache old layouts.
+                    TrySendTelegramText(chatId, UiText("Оновлюю клавіатуру...", "Refreshing keyboard..."), BuildKeyboardRemoveJson());
                     TrySendTelegramText(
                         chatId,
-                        UiText("✅ Доступ обмеженого користувача активовано.", "✅ Limited user access activated."),
+                        UiText($"✅ Доступ обмеженого користувача активовано.\nUI: {Program.TelegramUiRevision}", $"✅ Limited user access activated.\nUI: {Program.TelegramUiRevision}"),
                         BuildSelfUnbanKeyboardJson());
                     return;
                 }
@@ -1619,7 +1906,7 @@ class Program
                         return;
                     }
 
-                    bool isSelfUnbanButton = string.Equals(trimmed, UiText("Розблокуй мене", "Unblock me"), StringComparison.OrdinalIgnoreCase);
+                    bool isSelfUnbanButton = IsSelfUnbanButtonText(trimmed);
                     if (isSelfUnbanButton || command == "/unbanme")
                     {
                         ClearPendingTelegramCommand(chatId);
@@ -1643,6 +1930,40 @@ class Program
                         chatId,
                         UiText("Для вашої ролі доступна лише кнопка «Розблокуй мене».", "Only the 'Unblock me' button is available for your role."),
                         BuildSelfUnbanKeyboardJson());
+                    return;
+                }
+
+                if (IsSelfUnbanButtonText(trimmed) || command == "/unbanme")
+                {
+                    ClearPendingTelegramCommand(chatId);
+                    TelegramUnblockResult adminSelfUnbanResult = UnblockIpFromTelegramCore(LimitedSelfUnbanFixedIp);
+                    TrySendTelegramText(
+                        chatId,
+                        adminSelfUnbanResult.WasUnblocked
+                            ? UiText($"Ок, розблокував {LimitedSelfUnbanFixedIp}", $"OK, unblocked {LimitedSelfUnbanFixedIp}")
+                            : UiText($"Не знайшов блок для {LimitedSelfUnbanFixedIp}, схоже у тебе все ОК", $"No active block found for {LimitedSelfUnbanFixedIp}, looks like you are OK"),
+                        BuildCommandKeyboardJson());
+                    return;
+                }
+
+                if (IsStatusMenuButtonText(trimmed))
+                {
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, UiText("Розділ статусів відкрито.", "Status section opened."), BuildStatusKeyboardJson());
+                    return;
+                }
+
+                if (IsAdminMenuButtonText(trimmed))
+                {
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, UiText("Розділ адмін-команд відкрито.", "Admin section opened."), BuildAdminKeyboardJson());
+                    return;
+                }
+
+                if (IsBackMenuButtonText(trimmed))
+                {
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, UiText("Повернув головне меню.", "Returned to main menu."), BuildCommandKeyboardJson());
                     return;
                 }
 
@@ -1684,41 +2005,48 @@ class Program
                     return;
                 }
 
+                if (IsGroupMembersButtonText(trimmed) || command == "/groupmembers")
+                {
+                    ClearPendingTelegramCommand(chatId);
+                    TrySendTelegramText(chatId, BuildGroupMembersReply(), BuildAdminKeyboardJson());
+                    return;
+                }
+
                 if (command == "/status")
                 {
                     if (parts.Length < 2)
                     {
-                        TrySendTelegramText(chatId, BuildSystemStatusReply());
+                        TrySendTelegramText(chatId, BuildSystemStatusReply(), BuildStatusKeyboardJson());
                         return;
                     }
 
                     if (string.Equals(parts[1], "all", StringComparison.OrdinalIgnoreCase))
                     {
-                        TrySendTelegramText(chatId, BuildAllBlocksReply());
+                        TrySendTelegramText(chatId, BuildAllBlocksReply(), BuildStatusKeyboardJson());
                         return;
                     }
 
-                    TrySendTelegramText(chatId, BuildIpStatusReply(parts[1]));
+                    TrySendTelegramText(chatId, BuildIpStatusReply(parts[1]), BuildStatusKeyboardJson());
                     return;
                 }
 
                 if (command == "/service")
                 {
                     string action = parts.Length >= 2 ? parts[1] : "status";
-                    TrySendTelegramText(chatId, HandleServiceTelegramCommand(action));
+                    TrySendTelegramText(chatId, HandleServiceTelegramCommand(action), BuildAdminKeyboardJson());
                     return;
                 }
 
                 if (command == "/monitor")
                 {
                     string action = parts.Length >= 2 ? parts[1] : "status";
-                    TrySendTelegramText(chatId, HandleMonitorTelegramCommand(action));
+                    TrySendTelegramText(chatId, HandleMonitorTelegramCommand(action), BuildAdminKeyboardJson());
                     return;
                 }
 
                 if (command == "/thresholds" || command == "/levels")
                 {
-                    TrySendTelegramText(chatId, BuildThresholdsReply());
+                    TrySendTelegramText(chatId, BuildThresholdsReply(), BuildStatusKeyboardJson());
                     return;
                 }
 
@@ -1805,6 +2133,8 @@ class Program
                   UiText("/start — вхід та активація чату керування", "/start — sign in and activate control chat"),
                                 UiText("/adduser <телефон> — додати користувача з кнопкою 'Розблокуй мене'",
                                              "/adduser <phone> — add limited user with 'Unblock me' button"),
+                  UiText("/groupmembers — користувачі в групі та членство в каналі",
+                      "/groupmembers — users in group and channel membership"),
                 UiText("/status — стан системи (служба, процеси)",
                        "/status — system state (service, processes)"),
                 UiText("/status all — список усіх активних блокувань",
@@ -1818,6 +2148,7 @@ class Program
                   UiText("/thresholds або /levels — поточні пороги блокування",
                       "/thresholds or /levels — current block thresholds"),
                   UiText("/here — перевірити свій IP", "/here — check your IP status"),
+                                UiText("/unbanme — швидко розблокувати себе", "/unbanme — quick self-unban"),
                 UiText("/ban <ip> <тривалість> — вручну заблокувати IP (1d, 6h, 30m, 1440)",
                        "/ban <ip> <duration> — manually block an IP (1d, 6h, 30m, 1440)"),
                   UiText("/unban <ip> — зняти пряме блокування з IP",
@@ -2241,6 +2572,56 @@ class Program
                 return string.Empty;
 
             return (hasPlus ? "+" : "+") + digits.ToString();
+        }
+
+        private string BuildGroupMembersReply()
+        {
+            try
+            {
+                var cfg = telegramConfig;
+                var normalizedPhones = (cfg?.LimitedPhones ?? new List<string>())
+                    .Select(NormalizePhoneForTelegramRole)
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(p => p, StringComparer.Ordinal)
+                    .ToList();
+
+                List<string> authorizedLimitedChatsSnapshot;
+                lock (limitedTelegramChatsLock)
+                {
+                    authorizedLimitedChatsSnapshot = limitedTelegramChats
+                        .OrderBy(c => c, StringComparer.Ordinal)
+                        .ToList();
+                }
+
+                var lines = new List<string>
+                {
+                    UiText("👥 Користувачі в групі: членство в каналі", "👥 Users in group: channel membership"),
+                    UiText($"Дозволених телефонів у групі: {normalizedPhones.Count}", $"Allowed phones in group: {normalizedPhones.Count}"),
+                    UiText($"Підтверджених чатів у каналі: {authorizedLimitedChatsSnapshot.Count}", $"Authorized chats in channel: {authorizedLimitedChatsSnapshot.Count}")
+                };
+
+                lines.Add(string.Empty);
+                lines.Add(UiText("Телефони групи:", "Group phones:"));
+                if (normalizedPhones.Count == 0)
+                    lines.Add(UiText("- (порожньо)", "- (empty)"));
+                else
+                    lines.AddRange(normalizedPhones.Select(p => "- " + p));
+
+                lines.Add(string.Empty);
+                lines.Add(UiText("Чати з активним членством:", "Chats with active membership:"));
+                if (authorizedLimitedChatsSnapshot.Count == 0)
+                    lines.Add(UiText("- (немає)", "- (none)"));
+                else
+                    lines.AddRange(authorizedLimitedChatsSnapshot.Select(c => "- chat_id: " + c));
+
+                return string.Join("\n", lines);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"BuildGroupMembersReply error: {ex.Message}");
+                return UiText("Не вдалося отримати членство користувачів групи.", "Failed to get group users membership.");
+            }
         }
 
         private string ExtractFirstIpFromText(string raw)
@@ -2957,6 +3338,42 @@ class Program
             }
 
             return found;
+        }
+
+        private bool TryGetLatestActiveDirectBlockedIp(out string ipAddress)
+        {
+            ipAddress = string.Empty;
+            if (!File.Exists(blockListLogPath))
+                return false;
+
+            DateTime nowLocal = DateTime.Now;
+            DateTime bestUntil = DateTime.MinValue;
+            string bestIp = string.Empty;
+
+            lock (logLock)
+            {
+                foreach (string line in File.ReadAllLines(blockListLogPath))
+                {
+                    string target = ExtractBlockedTargetFromLine(line);
+                    if (string.IsNullOrWhiteSpace(target) || target.Contains("/", StringComparison.Ordinal))
+                        continue;
+
+                    if (IsBlockEntryExpired(line, nowLocal, out DateTime candidateUntil))
+                        continue;
+
+                    if (candidateUntil > bestUntil)
+                    {
+                        bestUntil = candidateUntil;
+                        bestIp = target;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(bestIp))
+                return false;
+
+            ipAddress = bestIp;
+            return true;
         }
 
         private bool TryGetActiveSubnetBlock(string ipAddress, out string subnetCidr, out DateTime untilLocal)
